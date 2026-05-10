@@ -301,8 +301,23 @@ class DemoHandler(SimpleHTTPRequestHandler):
             self._json(502, {"error": str(exc)})
 
 
+def generate_conversation_script():
+    """Regenerate conversation-script.md from scenarios.js + synthetic-data.js."""
+    import subprocess as _sp
+    result = _sp.run(
+        ["node", str(ROOT / "generate_script.js")],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+    else:
+        print("Warning: conversation-script.md could not be generated:", result.stderr.strip())
+
+
 if __name__ == "__main__":
     load_dotenv()
+    generate_conversation_script()
     port = int(os.environ.get("PORT", "8787"))
     server = ThreadingHTTPServer(("127.0.0.1", port), DemoHandler)
     print(f"Voice Agent demo running at http://127.0.0.1:{port}")
