@@ -35,7 +35,7 @@ As an executive demo producer, I want a 90-second browser demo that makes an AI 
 11. Copy/export a LinkedIn-ready CTA or talk track.
 12. Ground live model responses with scenario prompt, talk track, approved run-of-show, approved demo knowledge pack, and the signed-in portal profile for the active scenario.
 13. Support Azure OpenAI Realtime via a local Python token service, including the preview/legacy WebRTC flow required for the current `gpt-realtime-1.5` deployment.
-14. When the user is signed in to the portal in patient view, treat the portal sign-in as the validation source: greet by first name, reference the upcoming appointment or recent statement, and skip the explicit name+DOB validation step. Continue to avoid quoting balances, real account numbers, and full date of birth.
+14. When the user is signed in to the portal in patient view, the agent performs a quick voice-channel verification: it acknowledges the portal sign-in, then asks for the caller's name and date of birth before preparing the action packet. Use masked confirmation ("thanks, that matches") and never repeat a full date of birth back. After verification, the agent may greet by first name and reference the upcoming appointment, recent statement, or language preference.
 15. Include approved facility addresses, parking/location notes, and simple imaging-center FAQ answers so the agent can handle routine location questions.
 
 ## Live voice behavior requirements
