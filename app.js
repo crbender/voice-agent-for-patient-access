@@ -57,7 +57,22 @@ const els = {
   orbScenarioChip: document.getElementById("orbScenarioChip"),
   orbLiveBadge: document.getElementById("orbLiveBadge"),
   orbLiveLabel: document.getElementById("orbLiveLabel"),
-  toast: document.getElementById("toast")
+  toast: document.getElementById("toast"),
+  // Patient site + assistant panel
+  body: document.body,
+  viewSwitch: document.getElementById("viewSwitch"),
+  viewSwitchState: document.getElementById("viewSwitchState"),
+  siteNav: document.getElementById("siteNav"),
+  sitePage: document.getElementById("sitePage"),
+  assistantFab: document.getElementById("assistantFab"),
+  assistantPanel: document.getElementById("assistantPanel"),
+  assistantPanelTitle: document.getElementById("assistantPanelTitle"),
+  assistantPanelClose: document.getElementById("assistantPanelClose"),
+  assistantSlot: document.getElementById("assistantSlot"),
+  executiveAgentSlot: document.getElementById("executiveAgentSlot"),
+  agentSurface: document.getElementById("agentSurface"),
+  patientStartBtn: document.getElementById("patientStartBtn"),
+  patientStopBtn: document.getElementById("patientStopBtn")
 };
 
 function scenario() {
@@ -552,9 +567,225 @@ els.agentFace.addEventListener("keydown", event => {
   }
 });
 
+// --- Patient site + assistant panel -----------------------------------
+
+const SITE_PAGES = {
+  access: {
+    eyebrow: "Schedule & Imaging",
+    title: "Schedule your visit, get clear prep instructions, and find your way in.",
+    body: "Most routine scheduling and imaging questions can be handled in under two minutes with our virtual assistant. We loop in a teammate any time it isn\u2019t routine.",
+    actions: [
+      { label: "Reschedule a visit", primary: true, intent: "reschedule" },
+      { label: "Find an imaging center", primary: false, intent: "location" },
+      { label: "Prep instructions", primary: false, intent: "prep" }
+    ],
+    tiles: [
+      { title: "Imaging", body: "Northlake Imaging Center, with parking and accessibility notes.", icon: "image" },
+      { title: "Primary care", body: "Harborview Clinic offers same-week openings for established patients.", icon: "clinic" },
+      { title: "Specialty", body: "Riverside Specialty Pavilion for cardiology, endocrinology, and more.", icon: "specialty" }
+    ],
+    info: {
+      heading: "What to bring",
+      list: ["Photo ID", "Insurance card if you have one", "Any prior records the office requested", "Plan to arrive 15 minutes early"]
+    },
+    callout: "Need to reschedule? Tap the assistant."
+  },
+  revenue: {
+    eyebrow: "Billing & Insurance",
+    title: "Understand your statement, and set up a payment plan if you need one.",
+    body: "Our virtual assistant can walk you through how a claim moves and prepare a billing review without asking for your account number. A teammate handles disputes and hardship reviews.",
+    actions: [
+      { label: "Explain my statement", primary: true, intent: "explain" },
+      { label: "Pay online", primary: false, intent: "pay" },
+      { label: "Request a payment plan", primary: false, intent: "plan" }
+    ],
+    tiles: [
+      { title: "Statement explainer", body: "Walk through pending vs. processed without exposing account details.", icon: "doc" },
+      { title: "Payment plans", body: "Capture interest and route to the billing team for follow-up.", icon: "card" },
+      { title: "Financial assistance", body: "Hardship reviews go to a billing specialist for safe handling.", icon: "shield" }
+    ],
+    info: {
+      heading: "Ways to pay",
+      list: ["Online in Northlake MyHealth", "By phone with the billing team", "By mailed check", "Payment plan, on request"]
+    },
+    callout: "Have a statement question? Tap the assistant."
+  },
+  multilingual: {
+    eyebrow: "Language Access",
+    title: "Get help in your preferred language, with a certified interpreter when you need one.",
+    body: "Northlake Health supports access calls directly in English and Spanish, and arranges certified interpreters for many other languages. Clinical translation always routes to a human.",
+    actions: [
+      { label: "Confirm a visit", primary: true, intent: "confirm" },
+      { label: "Request an interpreter", primary: false, intent: "interpreter" },
+      { label: "Family on the callback", primary: false, intent: "family" }
+    ],
+    tiles: [
+      { title: "Direct support", body: "English and Spanish, available now through the assistant.", icon: "globe" },
+      { title: "Certified interpreters", body: "Mandarin, Vietnamese, Russian, Arabic, Tagalog, Somali, and ASL on request.", icon: "speech" },
+      { title: "Accessibility", body: "Wheelchair access at all locations; ASL scheduling routes to our coordinator.", icon: "access" }
+    ],
+    info: {
+      heading: "How language access works",
+      list: [
+        "The assistant captures your preferred language",
+        "Routine confirmations are handled directly",
+        "Clinical or complex needs route to certified language services",
+        "You\u2019ll see a callback in your preferred window"
+      ]
+    },
+    callout: "Prefer another language? Tap the assistant."
+  }
+};
+
+const SITE_HERO_ART = {
+  access: '<svg viewBox="0 0 200 200" fill="none" aria-hidden="true"><defs><linearGradient id="hgA" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="currentColor" stop-opacity="0.18"/><stop offset="100%" stop-color="currentColor" stop-opacity="0.04"/></linearGradient></defs><rect x="28" y="40" width="144" height="120" rx="16" fill="url(#hgA)" stroke="currentColor" stroke-width="2"/><path d="M28 72h144" stroke="currentColor" stroke-width="2"/><path d="M64 32v20M136 32v20" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><circle cx="70" cy="100" r="6" fill="currentColor"/><circle cx="100" cy="100" r="6" fill="currentColor" opacity="0.55"/><circle cx="130" cy="100" r="6" fill="currentColor" opacity="0.3"/><circle cx="70" cy="128" r="6" fill="currentColor" opacity="0.3"/><circle cx="100" cy="128" r="6" fill="currentColor"/><circle cx="130" cy="128" r="6" fill="currentColor" opacity="0.55"/></svg>',
+  revenue: '<svg viewBox="0 0 200 200" fill="none" aria-hidden="true"><defs><linearGradient id="hgR" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="currentColor" stop-opacity="0.18"/><stop offset="100%" stop-color="currentColor" stop-opacity="0.04"/></linearGradient></defs><rect x="44" y="36" width="112" height="140" rx="14" fill="url(#hgR)" stroke="currentColor" stroke-width="2"/><path d="M64 64h72M64 84h72M64 104h48M64 124h60" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><circle cx="100" cy="158" r="14" fill="currentColor" opacity="0.18" stroke="currentColor" stroke-width="2"/><path d="M96 152v12M104 152v12M93 158h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  multilingual: '<svg viewBox="0 0 200 200" fill="none" aria-hidden="true"><defs><linearGradient id="hgM" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="currentColor" stop-opacity="0.18"/><stop offset="100%" stop-color="currentColor" stop-opacity="0.04"/></linearGradient></defs><circle cx="100" cy="100" r="68" fill="url(#hgM)" stroke="currentColor" stroke-width="2"/><path d="M32 100h136M100 32a92 92 0 0 1 0 136M100 32a92 92 0 0 0 0 136" stroke="currentColor" stroke-width="2"/><path d="M64 70h72M64 100h72M64 130h48" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55"/></svg>'
+};
+
+const SITE_STATS = [
+  { value: "1.2M", label: "patient visits a year" },
+  { value: "24/7", label: "virtual assistant" },
+  { value: "9 languages", label: "with certified interpreters" },
+  { value: "<2 min", label: "for routine access" }
+];
+
+const SITE_TRUST_BADGES = [
+  "Accredited care",
+  "Secure by design",
+  "PHI protected",
+  "Available in English & Spanish"
+];
+
+const SITE_TILE_ICONS = {
+  image: '<svg viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="14" rx="2" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="11" r="2" stroke="currentColor" stroke-width="1.8"/><path d="M21 17l-5-5-8 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  clinic: '<svg viewBox="0 0 24 24" fill="none"><path d="M4 21V8l8-5 8 5v13" stroke="currentColor" stroke-width="1.8"/><path d="M10 21v-5h4v5M12 11v4M10 13h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  specialty: '<svg viewBox="0 0 24 24" fill="none"><path d="M12 21s-7-4.5-7-11a5 5 0 0 1 10 0 5 5 0 0 1 10 0c0 6.5-7 11-7 11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  doc: '<svg viewBox="0 0 24 24" fill="none"><path d="M6 3h9l4 4v14H6z" stroke="currentColor" stroke-width="1.8"/><path d="M9 9h6M9 13h6M9 17h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  card: '<svg viewBox="0 0 24 24" fill="none"><rect x="3" y="6" width="18" height="12" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M3 10h18M7 15h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  shield: '<svg viewBox="0 0 24 24" fill="none"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z" stroke="currentColor" stroke-width="1.8"/><path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  globe: '<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" stroke="currentColor" stroke-width="1.8"/></svg>',
+  speech: '<svg viewBox="0 0 24 24" fill="none"><path d="M4 5h16v10H8l-4 4z" stroke="currentColor" stroke-width="1.8"/><path d="M8 9h8M8 12h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  access: '<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="5" r="2" stroke="currentColor" stroke-width="1.8"/><path d="M9 8l3 5h4l3 5M9 8l-2 11M12 13v8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>'
+};
+
+function renderSitePage() {
+  const page = SITE_PAGES[state.scenarioKey];
+  if (!page || !els.sitePage) return;
+  const actions = page.actions.map(a => `<button class="btn ${a.primary ? "primary" : ""}" data-intent="${a.intent}">${a.label}</button>`).join("");
+  const tiles = page.tiles.map(t => `
+    <button class="site-tile" type="button">
+      <span class="site-tile-icon">${SITE_TILE_ICONS[t.icon] || ""}</span>
+      <b>${t.title}</b>
+      <span>${t.body}</span>
+    </button>
+  `).join("");
+  const trustBadges = SITE_TRUST_BADGES.map(b => `<span class="site-trust-badge">${b}</span>`).join("");
+  const stats = SITE_STATS.map(s => `<div class="site-stat"><b>${s.value}</b><span>${s.label}</span></div>`).join("");
+  els.sitePage.innerHTML = `
+    <section class="site-hero">
+      <div>
+        <span class="site-hero-eyebrow">${page.eyebrow}</span>
+        <h1>${page.title}</h1>
+        <p>${page.body}</p>
+        <div class="site-hero-actions">${actions}</div>
+        <div class="site-trust-row">${trustBadges}</div>
+      </div>
+      <div class="site-hero-art">${SITE_HERO_ART[state.scenarioKey] || ""}</div>
+    </section>
+    <section class="site-stats">${stats}</section>
+    <section class="site-tiles">${tiles}</section>
+    <section class="site-info">
+      <div class="site-info-card">
+        <h3>${page.info.heading}</h3>
+        <ul>${page.info.list.map(item => `<li>${item}</li>`).join("")}</ul>
+      </div>
+      <div class="site-info-card">
+        <h3>${page.callout}</h3>
+        <p>The assistant uses approved sample data for this demo. Anything outside routine access goes to a teammate.</p>
+      </div>
+    </section>
+  `;
+  els.sitePage.querySelectorAll("[data-intent]").forEach(btn => {
+    btn.addEventListener("click", () => openAssistantPanel());
+  });
+  els.sitePage.querySelectorAll(".site-tile").forEach(btn => {
+    btn.addEventListener("click", () => openAssistantPanel());
+  });
+  if (els.assistantPanelTitle) {
+    els.assistantPanelTitle.textContent = page.callout || "How can I help today?";
+  }
+}
+
+function setSitePage(key) {
+  if (!SITE_PAGES[key]) return;
+  if (state.peerConnection) stopRealtimeSession();
+  state.scenarioKey = key;
+  resetDemo();
+  renderScenario();
+  renderScenarioCards();
+  renderSitePage();
+  if (els.siteNav) {
+    els.siteNav.querySelectorAll(".site-nav-link").forEach(b => b.classList.toggle("active", b.dataset.page === key));
+  }
+}
+
+function setView(view) {
+  if (view !== "patient" && view !== "executive") return;
+  els.body.dataset.view = view;
+  if (els.viewSwitchState) els.viewSwitchState.textContent = view === "patient" ? "Patient view" : "Executive view";
+  if (els.executiveApp) els.executiveApp.setAttribute("aria-hidden", view === "executive" ? "false" : "true");
+  // Move the agent surface into the right slot
+  const target = view === "patient" ? els.assistantSlot : els.executiveAgentSlot;
+  if (target && els.agentSurface && els.agentSurface.parentElement !== target) {
+    target.appendChild(els.agentSurface);
+  }
+  // Closing the panel makes sense when leaving patient view
+  if (view === "executive") closeAssistantPanel();
+}
+
+function openAssistantPanel() {
+  if (!els.assistantPanel) return;
+  if (els.body.dataset.view !== "patient") setView("patient");
+  // Ensure agent surface is in the panel slot
+  if (els.agentSurface && els.assistantSlot && els.agentSurface.parentElement !== els.assistantSlot) {
+    els.assistantSlot.appendChild(els.agentSurface);
+  }
+  els.assistantPanel.classList.add("open");
+  els.assistantPanel.setAttribute("aria-hidden", "false");
+}
+
+function closeAssistantPanel() {
+  if (!els.assistantPanel) return;
+  els.assistantPanel.classList.remove("open");
+  els.assistantPanel.setAttribute("aria-hidden", "true");
+}
+
+els.executiveApp = document.getElementById("executiveApp");
+
+if (els.viewSwitch) {
+  els.viewSwitch.addEventListener("click", () => {
+    const next = els.body.dataset.view === "patient" ? "executive" : "patient";
+    setView(next);
+  });
+}
+if (els.siteNav) {
+  els.siteNav.querySelectorAll(".site-nav-link").forEach(btn => {
+    btn.addEventListener("click", () => setSitePage(btn.dataset.page));
+  });
+}
+if (els.assistantFab) els.assistantFab.addEventListener("click", () => {
+  openAssistantPanel();
+});
+if (els.assistantPanelClose) els.assistantPanelClose.addEventListener("click", closeAssistantPanel);
+if (els.patientStartBtn) els.patientStartBtn.addEventListener("click", startRealtimeSession);
+if (els.patientStopBtn) els.patientStopBtn.addEventListener("click", stopRealtimeSession);
+
 renderScenario();
 renderScenarioCards();
+renderSitePage();
 resetDemo();
 els.demoMode.value = "realtime";
 ensureTtsVoice();
+setView(els.body.dataset.view || "patient");
 checkRealtime();
