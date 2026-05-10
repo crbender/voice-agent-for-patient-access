@@ -72,7 +72,8 @@ const els = {
   executiveAgentSlot: document.getElementById("executiveAgentSlot"),
   agentSurface: document.getElementById("agentSurface"),
   patientStartBtn: document.getElementById("patientStartBtn"),
-  patientStopBtn: document.getElementById("patientStopBtn")
+  patientStopBtn: document.getElementById("patientStopBtn"),
+  executiveApp: document.getElementById("executiveApp")
 };
 
 function scenario() {
@@ -736,7 +737,10 @@ function renderSitePage() {
 
 function setSitePage(key) {
   if (!SITE_PAGES[key]) return;
-  if (state.peerConnection) stopRealtimeSession();
+  if (state.peerConnection) {
+    stopRealtimeSession();
+    showToast("Conversation ended; switching to " + SITE_PAGES[key].eyebrow + ".");
+  }
   state.scenarioKey = key;
   resetDemo();
   renderScenario();
@@ -778,15 +782,32 @@ function openAssistantPanel() {
   }
   els.assistantPanel.classList.add("open");
   els.assistantPanel.setAttribute("aria-hidden", "false");
+  const focusTarget = els.patientStartBtn || els.assistantPanelClose;
+  if (focusTarget) {
+    try { focusTarget.focus({ preventScroll: true }); } catch { focusTarget.focus(); }
+  }
 }
 
 function closeAssistantPanel() {
   if (!els.assistantPanel) return;
+  if (state.peerConnection) {
+    stopRealtimeSession();
+    showToast("Conversation ended.");
+  }
   els.assistantPanel.classList.remove("open");
   els.assistantPanel.setAttribute("aria-hidden", "true");
+  if (els.assistantFab) {
+    try { els.assistantFab.focus({ preventScroll: true }); } catch { els.assistantFab.focus(); }
+  }
 }
 
-els.executiveApp = document.getElementById("executiveApp");
+els.executiveApp = els.executiveApp || document.getElementById("executiveApp");
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && els.assistantPanel && els.assistantPanel.classList.contains("open")) {
+    closeAssistantPanel();
+  }
+});
 
 if (els.viewSwitch) {
   els.viewSwitch.addEventListener("click", () => {
@@ -812,5 +833,5 @@ renderSitePage();
 resetDemo();
 els.demoMode.value = "realtime";
 ensureTtsVoice();
-setView(els.body.dataset.view || "patient");
+setView(els.body.dataset.view === "executive" ? "executive" : "patient");
 checkRealtime();

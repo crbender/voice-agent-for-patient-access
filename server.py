@@ -340,11 +340,24 @@ def generate_conversation_script():
         print("Warning: conversation-script.md could not be generated:", result.stderr.strip())
 
 
+class _ReusableServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
 if __name__ == "__main__":
     load_dotenv()
     generate_conversation_script()
     port = int(os.environ.get("PORT", "8787"))
-    server = ThreadingHTTPServer(("127.0.0.1", port), DemoHandler)
+    try:
+        server = _ReusableServer(("127.0.0.1", port), DemoHandler)
+    except OSError as exc:
+        if getattr(exc, "errno", None) == 48:
+            print(
+                f"Port {port} is already in use. Stop the previous server:\n"
+                f"  lsof -ti:{port} | xargs kill -9"
+            )
+            raise SystemExit(1) from exc
+        raise
     print(f"Voice Agent demo running at http://127.0.0.1:{port}")
     print("Realtime voice:", "configured" if realtime_config()["configured"] else "not configured")
     server.serve_forever()
