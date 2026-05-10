@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Voice Agent for Patient Access</title>
+  <link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="16" fill="%23b11f4b"/><path d="M32 12a11 11 0 0 0-11 11v12a11 11 0 0 0 22 0V23A11 11 0 0 0 32 12Z" fill="none" stroke="white" stroke-width="5"/><path d="M16 32v3a16 16 0 0 0 32 0v-3M32 51v8M25 59h14" fill="none" stroke="white" stroke-width="5" stroke-linecap="round"/></svg>' />
+  <script>
+    (() => {
+      const param = new URLSearchParams(window.location.search).get("clawpilotTheme");
+      const theme =
+        param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
+  <style>
+    :root {
+      color-scheme: light;
+      --cp-bg: #f7f4ef;
+      --cp-bg-elevated: #fcfbf8;
+      --cp-surface: #ffffff;
+      --cp-surface-soft: #f5f5f5;
+      --cp-border: #dedede;
+      --cp-border-strong: #919191;
+      --cp-text: #242424;
+      --cp-text-muted: #5c5c5c;
+      --cp-text-soft: #6f6f6f;
+      --cp-accent: #b11f4b;
+      --cp-accent-hover: #9a1a41;
+      --cp-accent-soft: rgba(177, 31, 75, 0.08);
+      --cp-accent-fg: #ffffff;
+      --cp-success: #16a34a;
+      --cp-danger: #dc2626;
+      --cp-warning: #f59e0b;
+      --cp-link: #0078d4;
+      --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.12);
+      --cp-overlay: rgba(255, 255, 255, 0.8);
+      --cp-panel: rgba(255, 255, 255, 0.86);
+      --cp-panel-strong: rgba(255, 255, 255, 0.96);
+      --cp-sheen: rgba(255, 255, 255, 0.55);
+      --cp-highlight: rgba(177, 31, 75, 0.12);
+    }
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --cp-bg: #3d3b3a;
+      --cp-bg-elevated: #343231;
+      --cp-surface: #292929;
+      --cp-surface-soft: #2e2e2e;
+      --cp-border: #474747;
+      --cp-border-strong: #5f5f5f;
+      --cp-text: #dedede;
+      --cp-text-muted: #919191;
+      --cp-text-soft: #b0b0b0;
+      --cp-accent: #fd8ea1;
+      --cp-accent-hover: #fb7b91;
+      --cp-accent-soft: rgba(253, 142, 161, 0.14);
+      --cp-accent-fg: #1a1a1a;
+      --cp-success: #4ade80;
+      --cp-danger: #f87171;
+      --cp-warning: #fbbf24;
+      --cp-link: #4da6ff;
+      --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+      --cp-overlay: rgba(41, 41, 41, 0.88);
+      --cp-panel: rgba(41, 41, 41, 0.72);
+      --cp-panel-strong: rgba(41, 41, 41, 0.96);
+      --cp-sheen: rgba(255, 255, 255, 0.04);
+      --cp-highlight: rgba(253, 142, 161, 0.12);
+    }
+  </style>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M5 11a7 7 0 0 1 14 0v3a7 7 0 0 1-14 0v-3Z" stroke="currentColor" stroke-width="1.8"/>
+            <path d="M9 9.5v5M12 8v8M15 9.5v5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div>
+          <h1>Voice Agent for Patient Access</h1>
+          <p class="subtitle">A film-ready Azure Foundry scaffold for patient access, revenue cycle, and multilingual service demos.</p>
+        </div>
+      </div>
+      <div class="status-strip">
+        <span class="pill"><span class="dot"></span><span id="connectionLabel">Scripted mode</span></span>
+        <span class="pill">Synthetic data only</span>
+        <span class="pill">Spec Kit planned</span>
+      </div>
+    </header>
+
+    <section class="dashboard">
+      <aside class="panel stack">
+        <div class="panel-heading">
+          <span class="eyebrow">Director console</span>
+          <h2>Pick the story</h2>
+        </div>
+        <div class="scenario-grid" id="scenarioGrid"></div>
+
+        <div class="divider"></div>
+
+        <label class="field">
+          <span>Demo mode</span>
+          <select id="demoMode">
+            <option value="scripted">Scripted: deterministic for recording</option>
+            <option value="foundry">Foundry assist: live model replies if configured</option>
+          </select>
+        </label>
+
+        <div class="button-row">
+          <button class="btn primary" id="startBtn">Start 90s Demo</button>
+          <button class="btn" id="resetBtn">Reset</button>
+        </div>
+        <div class="button-row">
+          <button class="btn" id="muteBtn">Voice: On</button>
+          <button class="btn" id="copyScriptBtn">Copy talk track</button>
+        </div>
+
+        <div class="callout">
+          <strong id="hookLine">This is what happens when the front door of healthcare becomes conversational, multilingual, and always available.</strong>
+          <span>Open here. Then click Start. The patient intent, agent response, and operational signal appear before the 20-second mark.</span>
+        </div>
+      </aside>
+
+      <section class="stage panel" aria-label="Main demo stage">
+        <div class="stage-header">
+          <div>
+            <span class="eyebrow" id="scenarioEyebrow">Patient access</span>
+            <h2 id="scenarioTitle">AI answers the front door</h2>
+          </div>
+          <span class="tag hot" id="handoffTag">Pending</span>
+        </div>
+
+        <div class="stage-grid">
+          <div class="voice-column">
+            <div class="agent-face" id="agentFace">
+              <div class="pulse"></div>
+              <div class="pulse"></div>
+              <div class="orb">
+                <svg viewBox="0 0 24 24" fill="none">
+                  <path d="M12 3a4 4 0 0 0-4 4v5a4 4 0 0 0 8 0V7a4 4 0 0 0-4-4Z" stroke="currentColor" stroke-width="1.8"/>
+                  <path d="M5 11v1a7 7 0 0 0 14 0v-1M12 19v3M9 22h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                </svg>
+              </div>
+              <div class="waveform" aria-hidden="true">
+                <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+              </div>
+            </div>
+
+            <div class="transcript" id="transcript" aria-live="polite"></div>
+          </div>
+
+          <div class="ops-column">
+            <div class="metric">
+              <span class="metric-value" id="containment">0%</span>
+              <span class="metric-label">Estimated containment</span>
+            </div>
+            <div class="metric">
+              <span class="metric-value" id="waitTime">0m</span>
+              <span class="metric-label">Wait avoided</span>
+            </div>
+            <div class="metric">
+              <span class="metric-value" id="languages">1</span>
+              <span class="metric-label">Language-ready flow</span>
+            </div>
+            <div class="action-card">
+              <div class="action-card-title">Action packet</div>
+              <div class="mini-list" id="actionPacket"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="timeline">
+          <div class="progress-shell"><div class="progress" id="progress"></div></div>
+          <div class="timecode">
+            <span id="timeLabel">0:00</span>
+            <span id="sceneLabel">Ready</span>
+            <span>1:30</span>
+          </div>
+        </div>
+      </section>
+
+      <aside class="panel stack">
+        <div class="panel-heading">
+          <span class="eyebrow">Trust + architecture</span>
+          <h2>Show this to the CTO</h2>
+        </div>
+
+        <div class="arch-map">
+          <div class="arch-node">Browser demo UI</div>
+          <div class="arch-arrow">to</div>
+          <div class="arch-node">Local proxy</div>
+          <div class="arch-arrow">to</div>
+          <div class="arch-node">Azure Foundry model</div>
+          <div class="arch-arrow">to</div>
+          <div class="arch-node">Approved tools + handoff</div>
+        </div>
+
+        <div class="trust-list">
+          <div><b>No PHI:</b> synthetic scenarios only for public recording.</div>
+          <div><b>Least privilege:</b> Entra token is acquired server-side; no model credentials in browser.</div>
+          <div><b>Escalation:</b> clinical, identity, or exception flows route to staff.</div>
+          <div><b>Auditability:</b> transcript, action packet, source, and handoff state are visible.</div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="panel-heading compact">
+          <span class="eyebrow">Captions</span>
+          <h2>Post-production text</h2>
+        </div>
+        <div class="caption-list" id="captionList"></div>
+
+        <div class="divider"></div>
+
+        <div class="panel-heading compact">
+          <span class="eyebrow">Foundry status</span>
+          <h2 id="foundryStatus">Checking local proxy...</h2>
+        </div>
+        <p class="muted" id="foundryDetail">Start with scripted mode. Enable live model responses when credentials are configured locally.</p>
+      </aside>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="./scenarios.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
