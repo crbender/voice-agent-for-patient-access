@@ -133,7 +133,53 @@ window.SYNTHETIC_KNOWLEDGE = {
       "language-services request requires human interpreter",
       "records request requiring identity verification",
       "portal access lockout"
-    ]
+    ],
+    signedInProfiles: {
+      access: {
+        displayName: "Jordan Lee",
+        memberSince: "2019",
+        portalContext: "Signed in to Northlake MyHealth as Jordan Lee.",
+        upcomingAppointment: {
+          type: "MRI - lumbar spine",
+          facility: "Northlake Imaging Center",
+          when: "Tomorrow at 9:30 AM",
+          provider: "Dr. Patel (referring)",
+          checkInWindow: "Arrive by 9:15 AM",
+          status: "Confirmed",
+          prep: "No metal jewelry; wear loose clothing."
+        },
+        agentBriefing: "Jordan Lee has an MRI of the lumbar spine scheduled tomorrow at 9:30 AM at Northlake Imaging Center. Confirmed status. Greet by name and reference the upcoming visit when relevant."
+      },
+      revenue: {
+        displayName: "Alex Morgan",
+        memberSince: "2014",
+        portalContext: "Signed in to Northlake MyHealth as Alex Morgan.",
+        recentStatement: {
+          dateOfService: "April 22, 2026",
+          summary: "Outpatient visit and lab work",
+          status: "Pending payer review",
+          payerNote: "Insurance has requested additional documentation; billing team is following up.",
+          patientResponsibility: "Not yet finalized"
+        },
+        agentBriefing: "Alex Morgan has a statement from an April 22 outpatient visit currently pending payer review. Do not quote a balance; explain workflow and offer a billing review packet or payment plan interest capture."
+      },
+      multilingual: {
+        displayName: "Elena Garcia",
+        memberSince: "2021",
+        portalContext: "Signed in to Northlake MyHealth as Elena Garcia. Preferred language: Spanish.",
+        upcomingAppointment: {
+          type: "Primary care follow-up",
+          facility: "Harborview Clinic",
+          when: "Friday at 2:15 PM",
+          provider: "Dr. Romero",
+          checkInWindow: "Arrive by 2:00 PM",
+          status: "Confirmed",
+          prep: "Bring updated medication list."
+        },
+        languagePreference: "Spanish",
+        agentBriefing: "Elena Garcia has a primary care follow-up Friday at 2:15 PM at Harborview Clinic with Dr. Romero. Preferred language is Spanish. Greet by name, acknowledge language preference, and confirm details from the portal context."
+      }
+    }
   },
   access: {
     personas: [

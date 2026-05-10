@@ -73,7 +73,11 @@ const els = {
   agentSurface: document.getElementById("agentSurface"),
   patientStartBtn: document.getElementById("patientStartBtn"),
   patientStopBtn: document.getElementById("patientStopBtn"),
-  executiveApp: document.getElementById("executiveApp")
+  executiveApp: document.getElementById("executiveApp"),
+  callerEyebrow: document.getElementById("callerEyebrow"),
+  siteUserName: document.getElementById("siteUserName"),
+  siteUserAvatar: document.getElementById("siteUserAvatar"),
+  siteUserHint: document.getElementById("siteUserHint")
 };
 
 function scenario() {
@@ -110,6 +114,7 @@ function renderScenarioCards() {
 
 function renderScenario() {
   const item = scenario();
+  const profile = (window.SYNTHETIC_KNOWLEDGE?.shared?.signedInProfiles || {})[state.scenarioKey];
   const context = {
     access: {
       caller: "Jordan Lee · Imaging access",
@@ -131,6 +136,16 @@ function renderScenario() {
   els.scenarioTitle.textContent = item.title;
   els.captionList.innerHTML = item.captions.map(caption => `<div class="caption-item">${caption}</div>`).join("");
   if (els.orbScenarioChip) els.orbScenarioChip.textContent = item.label;
+  // Site header signed-in chip
+  if (profile) {
+    if (els.siteUserName) els.siteUserName.textContent = profile.displayName;
+    if (els.siteUserAvatar) els.siteUserAvatar.textContent = profile.displayName.split(/\s+/).map(p => p[0]).slice(0, 2).join("").toUpperCase();
+    if (els.siteUserHint) {
+      els.siteUserHint.textContent = profile.languagePreference
+        ? `Signed in · ${profile.languagePreference}`
+        : `Member since ${profile.memberSince}`;
+    }
+  }
   renderSceneChips();
 }
 
@@ -398,6 +413,7 @@ async function startRealtimeSession() {
           shared: window.SYNTHETIC_KNOWLEDGE?.shared || {},
           scenario: window.SYNTHETIC_KNOWLEDGE?.[state.scenarioKey] || {}
         },
+        signedInProfile: (window.SYNTHETIC_KNOWLEDGE?.shared?.signedInProfiles || {})[state.scenarioKey] || null,
         demoScript: scenario().script.map(item => ({
           scene: item.scene,
           who: item.who,
@@ -733,6 +749,45 @@ function renderSitePage() {
   if (els.assistantPanelTitle) {
     els.assistantPanelTitle.textContent = page.callout || "How can I help today?";
   }
+  renderPortalPreview();
+}
+
+function renderPortalPreview() {
+  const host = document.getElementById("portalPreview");
+  if (!host) return;
+  const profile = (window.SYNTHETIC_KNOWLEDGE?.shared?.signedInProfiles || {})[state.scenarioKey];
+  if (!profile) { host.innerHTML = ""; return; }
+  let body = "";
+  if (profile.upcomingAppointment) {
+    const a = profile.upcomingAppointment;
+    body = `
+      <div class="portal-card-header">
+        <b>Your next visit</b>
+        <span class="pill">${escapeHtml(a.status)}</span>
+      </div>
+      <div class="portal-card-grid">
+        <div><div class="label">Type</div><div class="value">${escapeHtml(a.type)}</div></div>
+        <div><div class="label">When</div><div class="value">${escapeHtml(a.when)}</div></div>
+        <div><div class="label">Where</div><div class="value">${escapeHtml(a.facility)}</div></div>
+        <div><div class="label">Provider</div><div class="value">${escapeHtml(a.provider)}</div></div>
+        <div><div class="label">Check-in</div><div class="value">${escapeHtml(a.checkInWindow)}</div></div>
+        <div><div class="label">Prep</div><div class="value">${escapeHtml(a.prep)}</div></div>
+      </div>`;
+  } else if (profile.recentStatement) {
+    const s = profile.recentStatement;
+    body = `
+      <div class="portal-card-header">
+        <b>Recent statement</b>
+        <span class="pill">${escapeHtml(s.status)}</span>
+      </div>
+      <div class="portal-card-grid">
+        <div><div class="label">Date of service</div><div class="value">${escapeHtml(s.dateOfService)}</div></div>
+        <div><div class="label">Summary</div><div class="value">${escapeHtml(s.summary)}</div></div>
+        <div><div class="label">Payer</div><div class="value">${escapeHtml(s.payerNote)}</div></div>
+        <div><div class="label">Your responsibility</div><div class="value">${escapeHtml(s.patientResponsibility)}</div></div>
+      </div>`;
+  }
+  host.innerHTML = body ? `<div class="portal-card">${body}</div>` : "";
 }
 
 function setSitePage(key) {
@@ -756,6 +811,7 @@ function setView(view) {
   els.body.dataset.view = view;
   if (els.viewSwitchState) els.viewSwitchState.textContent = view === "patient" ? "Patient view" : "Executive view";
   if (els.executiveApp) els.executiveApp.setAttribute("aria-hidden", view === "executive" ? "false" : "true");
+  if (els.callerEyebrow) els.callerEyebrow.textContent = view === "patient" ? "Active user" : "Active caller";
   // Move the agent surface into the right slot
   const target = view === "patient" ? els.assistantSlot : els.executiveAgentSlot;
   if (target && els.agentSurface && els.agentSurface.parentElement !== target) {

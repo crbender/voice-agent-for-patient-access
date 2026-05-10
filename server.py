@@ -79,6 +79,7 @@ def build_realtime_instructions(request_body):
     close = request_body.get("close", "")
     knowledge = request_body.get("knowledge", {})
     demo_script = request_body.get("demoScript", [])
+    signed_in_profile = request_body.get("signedInProfile") or {}
     script_lines = []
     for item in demo_script:
         if not isinstance(item, dict):
@@ -91,6 +92,8 @@ def build_realtime_instructions(request_body):
             script_lines.append(f"- {scene} / {who}: {text}" + (f" [{packet}]" if packet else ""))
     script_card = "\n".join(script_lines[:10])
     knowledge_card = json.dumps(knowledge, indent=2)[:12000]
+    profile_card = json.dumps(signed_in_profile, indent=2) if signed_in_profile else "(no signed-in profile)"
+    profile_briefing = signed_in_profile.get("agentBriefing", "") if signed_in_profile else ""
 
     return (
         "ROLE\n"
@@ -169,6 +172,9 @@ def build_realtime_instructions(request_body):
         "- Escalation: 'That should go to a staff member. I will mark the handoff state and include the reason in the action packet.'\n"
         "- Close: 'Anything else I can help with right now? If not, you'll see the callback in your window.'\n\n"
         f"EXEC TALK TRACK TO ALIGN WITH:\n{talk_track}\n\n"
+        f"SIGNED-IN PORTAL CONTEXT (the user is already authenticated in Northlake MyHealth):\n{profile_card}\n\n"
+        f"AGENT BRIEFING:\n{profile_briefing}\n\n"
+        "Because the user is signed in, you may greet them by first name and reference the upcoming appointment, recent statement, or language preference shown in the portal context. Skip the name+DOB validation step (treat portal sign-in as the validation source) but still avoid quoting balances, real account numbers, or full date of birth.\n\n"
         f"APPROVED DEMO KNOWLEDGE PACK:\n{knowledge_card}\n\n"
         f"APPROVED RUN-OF-SHOW:\n{script_card}\n\n"
         f"CLOSING LINE TO PRESERVE WHEN APPROPRIATE:\n{close}\n\n"

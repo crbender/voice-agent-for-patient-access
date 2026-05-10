@@ -96,7 +96,13 @@
       </nav>
       <div class="site-actions">
         <button class="site-link" type="button">Find a doctor</button>
-        <button class="site-link" type="button">MyHealth sign in</button>
+        <span class="site-user" id="siteUser" aria-live="polite">
+          <span class="site-user-avatar" id="siteUserAvatar" aria-hidden="true">JL</span>
+          <span class="site-user-text">
+            <b id="siteUserName">Jordan Lee</b>
+            <span id="siteUserHint">Signed in to MyHealth</span>
+          </span>
+        </span>
       </div>
     </header>
 
@@ -167,6 +173,7 @@
       <button class="btn primary" id="patientStartBtn" type="button">Start conversation</button>
       <button class="btn danger" id="patientStopBtn" type="button" disabled>End</button>
     </div>
+    <div id="portalPreview"></div>
     <div class="assistant-panel-body" id="assistantSlot"></div>
     <div class="assistant-panel-footnote">
       Demo only · uses approved sample data. The team is on standby for anything outside routine access.
@@ -263,7 +270,7 @@
             <div id="agentSurface">
             <div class="call-banner">
               <div>
-                <span class="eyebrow">Active caller</span>
+                <span class="eyebrow" id="callerEyebrow">Active caller</span>
                 <h2 id="callerTitle">Jordan Lee · Imaging access</h2>
               </div>
               <div class="call-badges">

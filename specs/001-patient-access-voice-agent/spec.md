@@ -30,12 +30,13 @@ As an executive demo producer, I want a 90-second browser demo that makes an AI 
 6. Show changing transcript, operational metrics, action packet, handoff state, and progress.
 7. Provide scenario presets for patient access, revenue cycle, and multilingual access.
 8. Provide a hospital access-console UI with queue, caller context, patient context, supervisor view, trust controls, and realtime status.
-9. Provide architecture and trust panels that can be shown on camera.
-10. Copy/export a LinkedIn-ready CTA or talk track.
-11. Ground live model responses with scenario prompt, talk track, approved run-of-show, and approved demo knowledge pack.
-12. Support Azure OpenAI Realtime via a local Python token service, including the preview/legacy WebRTC flow required for the current `gpt-realtime-1.5` deployment.
-13. Include a common access-center validation step using demo caller name and demo date of birth before preparing an action packet.
-14. Include approved facility addresses, parking/location notes, and simple imaging-center FAQ answers so the agent can handle routine location questions.
+9. Provide a patient-portal patient view ("Northlake MyHealth") that simulates a signed-in user, with a per-scenario preview of the user's upcoming appointment, recent statement, or language preference, and an embedded virtual assistant panel.
+10. Provide architecture and trust panels that can be shown on camera.
+11. Copy/export a LinkedIn-ready CTA or talk track.
+12. Ground live model responses with scenario prompt, talk track, approved run-of-show, approved demo knowledge pack, and the signed-in portal profile for the active scenario.
+13. Support Azure OpenAI Realtime via a local Python token service, including the preview/legacy WebRTC flow required for the current `gpt-realtime-1.5` deployment.
+14. When the user is signed in to the portal in patient view, treat the portal sign-in as the validation source: greet by first name, reference the upcoming appointment or recent statement, and skip the explicit name+DOB validation step. Continue to avoid quoting balances, real account numbers, and full date of birth.
+15. Include approved facility addresses, parking/location notes, and simple imaging-center FAQ answers so the agent can handle routine location questions.
 
 ## Live voice behavior requirements
 

@@ -1278,3 +1278,74 @@ body[data-view="executive"] .assistant-panel { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .assistant-panel { transition: none; }
 }
+
+/* --- Signed-in user chip in site header ---------------------------- */
+
+.site-user {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px 6px 6px;
+  border: 1px solid var(--cp-border);
+  border-radius: 999px;
+  background: var(--cp-surface);
+  color: var(--cp-text);
+}
+.site-user-avatar {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--cp-accent);
+  color: var(--cp-accent-fg);
+  font-size: 0.74rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+.site-user-text { display: grid; line-height: 1.05; }
+.site-user-text b { font-size: 0.88rem; }
+.site-user-text span {
+  color: var(--cp-text-muted);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+}
+
+/* --- Portal preview card inside the assistant panel ---------------- */
+
+.portal-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--cp-border);
+  border-radius: 14px;
+  background: var(--cp-surface);
+}
+.portal-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.portal-card-header b {
+  font-size: 0.95rem;
+  letter-spacing: -0.01em;
+}
+.portal-card-header .pill { font-size: 0.7rem; padding: 4px 8px; }
+.portal-card-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 14px;
+}
+.portal-card-grid .label {
+  color: var(--cp-text-muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 800;
+}
+.portal-card-grid .value {
+  color: var(--cp-text);
+  font-size: 0.92rem;
+  font-weight: 700;
+}

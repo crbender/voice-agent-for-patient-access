@@ -15,11 +15,10 @@ The demo has two execution paths:
 
 ## UI surfaces
 
-- **Access center queue**: call-type selector, live queue metrics, call mode, answer/end controls, recording hook.
-- **Main demo stage**: active synthetic caller, clickable mic/orb, transcript, metrics, action packet, and progress.
-- **Patient context panel**: synthetic caller need, preferred channel, safety boundary, and operating metrics.
-- **Supervisor view**: production integration map, governance notes, synthetic data notice, captions, and realtime status.
-- **Scenario presets**: fast switching between patient access, revenue cycle, and multilingual access.
+- **Patient view (Northlake MyHealth portal simulation)**: hospital website shell with a per-scenario page (Schedule & Imaging, Billing & Insurance, Language Access). The header shows a signed-in user chip for the active scenario persona. A floating "Talk to a virtual assistant" button opens a slide-in panel that shows the user's portal context (upcoming appointment, recent statement, or language preference) and embeds the agent surface. Closing the panel ends any live realtime session.
+- **Executive view (access center console)**: call-type selector, queue metrics, call mode, answer/end controls, recording hook, scenario presets, supervisor view, captions, realtime status, and architecture/trust panels. Toggled from a top-right "Demo mode" pill.
+- **Shared agent surface**: a single agent surface (call banner, mic orb, transcript) is moved between the patient panel and the executive console without disrupting the realtime session.
+- **Scenario presets**: fast switching between patient access, revenue cycle, and multilingual access; switching scenarios while signed in updates the portal preview and scripted run-of-show.
 
 ## Integration seam
 
