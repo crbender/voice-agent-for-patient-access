@@ -1,82 +1,211 @@
 #!/usr/bin/env python3
-"""Local demo server with an optional Entra-authenticated Azure Foundry proxy.
+"""Local demo server with a server-side Azure OpenAI Realtime token service.
 
-Environment variables:
-  FOUNDRY_ENDPOINT     Example: https://my-resource.openai.azure.com
-  FOUNDRY_DEPLOYMENT   Example: gpt-4.1 or model-router-demo
-  FOUNDRY_API_VERSION  Optional, defaults to 2025-01-01-preview
-  FOUNDRY_CHAT_URL     Optional full chat completions URL override
-  AZURE_TENANT_ID      Optional tenant for az account get-access-token
-  FOUNDRY_ACCESS_TOKEN Optional pre-fetched Entra token override
-  PORT                 Optional, defaults to 8787
+Environment variables, automatically loaded from .env when present:
+  AZURE_OPENAI_ENDPOINT             Example: https://my-resource.cognitiveservices.azure.com
+  AZURE_OPENAI_API_KEY              API key for your personal demo resource; never sent to the browser
+  AZURE_OPENAI_REALTIME_DEPLOYMENT  Example: gpt-realtime
+  AZURE_OPENAI_REALTIME_VOICE       Optional, defaults to alloy
+  AZURE_OPENAI_REALTIME_PROTOCOL    Optional: ga-webrtc or legacy-webrtc
+  AZURE_OPENAI_REALTIME_REGION      Required for legacy-webrtc, defaults to eastus2
+  AZURE_OPENAI_REALTIME_API_VERSION Optional legacy sessions API version
+  REALTIME_TRANSCRIPTION_MODEL      Optional, defaults to whisper-1
+  PORT                              Optional, defaults to 8787
 """
 
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import json
 import os
 from pathlib import Path
-import subprocess
-import time
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parent
-TOKEN_CACHE = {"token": "", "expires_at": 0}
+
+SUPPORTED_REALTIME_MODELS = (
+    "gpt-4o-realtime-preview",
+    "gpt-4o-mini-realtime-preview",
+    "gpt-realtime",
+    "gpt-realtime-mini",
+    "gpt-realtime-1.5",
+)
 
 
-def foundry_config():
-    endpoint = os.environ.get("FOUNDRY_ENDPOINT", "").rstrip("/")
-    deployment = os.environ.get("FOUNDRY_DEPLOYMENT", "")
-    api_version = os.environ.get("FOUNDRY_API_VERSION", "2025-01-01-preview")
-    chat_url = os.environ.get("FOUNDRY_CHAT_URL", "")
-    tenant_id = os.environ.get("AZURE_TENANT_ID", "")
-    access_token = os.environ.get("FOUNDRY_ACCESS_TOKEN", "")
-    configured = bool(chat_url or (endpoint and deployment))
+def load_dotenv():
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def realtime_config():
+    endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
+    deployment = os.environ.get("AZURE_OPENAI_REALTIME_DEPLOYMENT", "gpt-realtime")
+    api_key = os.environ.get("AZURE_OPENAI_API_KEY", "")
+    voice = os.environ.get("AZURE_OPENAI_REALTIME_VOICE", "alloy")
+    protocol = os.environ.get("AZURE_OPENAI_REALTIME_PROTOCOL", "ga-webrtc")
+    region = os.environ.get("AZURE_OPENAI_REALTIME_REGION", "eastus2").lower().replace(" ", "")
+    api_version = os.environ.get("AZURE_OPENAI_REALTIME_API_VERSION", "2025-04-01-preview")
+    transcription_model = os.environ.get("REALTIME_TRANSCRIPTION_MODEL", "whisper-1")
+    configured = bool(endpoint and api_key and deployment)
     return {
         "endpoint": endpoint,
         "deployment": deployment,
+        "api_key": api_key,
+        "voice": voice,
+        "protocol": protocol,
+        "region": region,
         "api_version": api_version,
-        "chat_url": chat_url,
-        "tenant_id": tenant_id,
-        "access_token": access_token,
+        "transcription_model": transcription_model,
         "configured": configured,
+        "supported_models": SUPPORTED_REALTIME_MODELS,
     }
 
 
-def get_entra_token(cfg):
-    if cfg["access_token"]:
-        return cfg["access_token"]
+def build_realtime_instructions(request_body):
+    scenario = request_body.get("scenario", "Patient access")
+    system_prompt = request_body.get("systemPrompt", "")
+    talk_track = request_body.get("talkTrack", "")
+    close = request_body.get("close", "")
+    knowledge = request_body.get("knowledge", {})
+    demo_script = request_body.get("demoScript", [])
+    script_lines = []
+    for item in demo_script:
+        if not isinstance(item, dict):
+            continue
+        who = item.get("who", "Demo")
+        scene = item.get("scene", "Beat")
+        text = item.get("text", "")
+        packet = "; ".join(item.get("packet", []))
+        if text:
+            script_lines.append(f"- {scene} / {who}: {text}" + (f" [{packet}]" if packet else ""))
+    script_card = "\n".join(script_lines[:10])
+    knowledge_card = json.dumps(knowledge, indent=2)[:6500]
 
-    now = int(time.time())
-    if TOKEN_CACHE["token"] and TOKEN_CACHE["expires_at"] - 120 > now:
-        return TOKEN_CACHE["token"]
+    return (
+        "ROLE\n"
+        "You are Northlake Health's patient access voice agent in a filmed executive demo. "
+        "Sound like a production-ready hospital contact-center agent: calm, concise, empathetic, and operationally precise. "
+        "You are not a general assistant and not a clinician.\n\n"
+        f"SELECTED WORKFLOW: {scenario}\n"
+        f"BASE POLICY: {system_prompt}\n\n"
+        "PRIMARY OBJECTIVE\n"
+        "Resolve routine access friction by identifying intent, explaining only approved guidance, and preparing a staff-ready action packet. "
+        "The business value to demonstrate is shorter hold time, cleaner staff handoffs, and safer escalation.\n\n"
+        "CONVERSATION FLOW\n"
+        "1. Open with one short greeting and ask how you can help with access today.\n"
+        "2. Identify the caller's intent using the selected workflow and approved demo knowledge pack.\n"
+        "3. Before preparing an action packet, ask for the caller's name and date of birth for demo validation.\n"
+        "4. Ask at most one lightweight clarification if needed, such as visit type, preferred callback window, facility preference, language preference, or question category.\n"
+        "5. State the next best action using approved terms: approved FAQ, callback task, billing review packet, language access summary, or staff queue.\n"
+        "6. Close each turn by confirming handoff state or asking one focused next question.\n\n"
+        "STRICT SAFETY AND DATA BOUNDARIES\n"
+        "- Use approved demo facts only. Never invent appointment times, clinic assignments, balances, benefits, diagnoses, tool results, or policy citations.\n"
+        "- For demo validation, you may ask for caller name and date of birth.\n"
+        "- Never repeat a full date of birth back to the caller. Acknowledge validation with masked language or say validation is complete.\n"
+        "- Never ask for or repeat real PHI: real address, member ID, account number, real appointment details, symptoms, medications, or clinical history.\n"
+        "- Do not provide clinical advice, diagnosis, medication guidance, fasting determinations, urgency assessment, or financial hardship decisions.\n"
+        "- If the caller asks for clinical, urgent, identity, billing-dispute, hardship, or complex language support, say you will route it to staff.\n"
+        "- If asked whether this changed a real appointment or account, say this demo prepares a staff-ready task; it does not modify live systems.\n\n"
+        "GROUNDING REQUIREMENTS\n"
+        "- Use only the approved demo knowledge pack and approved run-of-show below.\n"
+        "- If the caller goes off-script, acknowledge briefly and bridge back to the selected workflow.\n"
+        "- Prefer concrete hospital operations language over AI jargon.\n"
+        "- Mention 'action packet' when summarizing what staff receive.\n"
+        "- Mention 'approved instructions' or 'approved FAQ' for prep/policy questions.\n"
+        "- Mention 'staff queue' or 'human handoff' for exceptions.\n\n"
+        "LOCATION GUIDANCE\n"
+        "- You may answer simple facility location, hours, parking, and wayfinding questions using only approved facility data.\n"
+        "- If a location is not in the approved demo knowledge pack, do not infer it; offer to include the question in the staff handoff.\n"
+        "- Keep location answers short and practical, such as address plus parking entrance.\n\n"
+        "SPOKEN STYLE\n"
+        "- Keep every response to 1-2 sentences and under 35 words.\n"
+        "- Use plain language, no markdown, no bullets, no numbered lists.\n"
+        "- Avoid saying 'as an AI model.' Say 'I can prepare' or 'I can route.'\n"
+        "- Do not over-apologize. Be direct and reassuring.\n"
+        "- If uncertain, say what safe next action you can take, not what you cannot do.\n\n"
+        "RESPONSE PATTERNS\n"
+        "- Validation: 'For validation, may I have your name and date of birth?'\n"
+        "- Validation complete: 'Validation is complete. I can prepare the action packet.'\n"
+        "- Rescheduling: 'I can prepare a scheduling callback task with the visit type, facility preference, and preferred callback window.'\n"
+        "- Location: 'Northlake Imaging Center is at the approved address in the knowledge pack. Use the listed parking guidance for arrival.'\n"
+        "- Prep instructions: 'I can share approved instructions from the FAQ, but procedure-specific clinical questions route to staff.'\n"
+        "- Billing: 'I can prepare a billing review packet without collecting account numbers.'\n"
+        "- Multilingual: 'I can note the language preference and prepare a staff-ready language access summary.'\n"
+        "- Escalation: 'That should go to a staff member. I will mark the handoff state and include the reason in the action packet.'\n\n"
+        f"EXEC TALK TRACK TO ALIGN WITH:\n{talk_track}\n\n"
+        f"APPROVED DEMO KNOWLEDGE PACK:\n{knowledge_card}\n\n"
+        f"APPROVED RUN-OF-SHOW:\n{script_card}\n\n"
+        f"CLOSING LINE TO PRESERVE WHEN APPROPRIATE:\n{close}\n\n"
+        "BEGIN NOW\n"
+        "Start with a concise patient-access greeting. Keep the conversation grounded, useful, and safe."
+    ).strip()
 
-    command = [
-        "az",
-        "account",
-        "get-access-token",
-        "--resource",
-        "https://cognitiveservices.azure.com/",
-        "--output",
-        "json",
-    ]
-    if cfg["tenant_id"]:
-        command.extend(["--tenant", cfg["tenant_id"]])
 
-    try:
-        result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=30)
-    except FileNotFoundError as exc:
-        raise RuntimeError("Azure CLI is required for Entra auth. Install az or set FOUNDRY_ACCESS_TOKEN.") from exc
-    except subprocess.CalledProcessError as exc:
-        detail = exc.stderr.strip() or exc.stdout.strip() or str(exc)
-        raise RuntimeError(f"Azure CLI token request failed: {detail}") from exc
+def request_ga_realtime_client_secret(cfg, request_body, instructions):
+    url = f"{cfg['endpoint']}/openai/v1/realtime/client_secrets"
+    session_config = {
+        "session": {
+            "type": "realtime",
+            "model": cfg["deployment"],
+            "instructions": instructions,
+            "audio": {
+                "input": {
+                    "transcription": {"model": cfg["transcription_model"]},
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.5,
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 500,
+                        "create_response": True,
+                    },
+                },
+                "output": {
+                    "voice": cfg["voice"],
+                },
+            },
+        }
+    }
+    req = Request(
+        url,
+        data=json.dumps(session_config).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "api-key": cfg["api_key"],
+        },
+        method="POST",
+    )
+    with urlopen(req, timeout=30) as response:
+        return json.loads(response.read())
 
-    data = json.loads(result.stdout)
-    TOKEN_CACHE["token"] = data["accessToken"]
-    TOKEN_CACHE["expires_at"] = data.get("expiresOnTimestamp", now + 3000)
-    return TOKEN_CACHE["token"]
+
+def request_legacy_realtime_session(cfg):
+    url = f"{cfg['endpoint']}/openai/realtimeapi/sessions?api-version={cfg['api_version']}"
+    payload = {
+        "model": cfg["deployment"],
+        "voice": cfg["voice"],
+    }
+    req = Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "api-key": cfg["api_key"],
+        },
+        method="POST",
+    )
+    with urlopen(req, timeout=30) as response:
+        return json.loads(response.read())
 
 
 class DemoHandler(SimpleHTTPRequestHandler):
@@ -91,92 +220,91 @@ class DemoHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _azure_error(self, exc):
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(raw)
+            message = payload.get("error", {}).get("message", raw)
+            code = payload.get("error", {}).get("code", "")
+        except json.JSONDecodeError:
+            return {"error": raw}
+
+        if code.lower() == "opperationnotsupported" or "does not work with the specified model" in message:
+            payload["guidance"] = (
+                "This deployment is not a Realtime speech-in/speech-out model. "
+                "Deploy one of: " + ", ".join(SUPPORTED_REALTIME_MODELS) + ". "
+                "Then set AZURE_OPENAI_REALTIME_DEPLOYMENT to that deployment name in .env. "
+                "The gpt-realtime-whisper AzureML model package is not a conversational Realtime session model."
+            )
+        return payload
+
     def do_GET(self):
-        if self.path == "/api/foundry/status":
-          cfg = foundry_config()
-          self._json(200, {
-              "configured": cfg["configured"],
-              "deployment": cfg["deployment"] or "custom chat URL",
-              "apiVersion": cfg["api_version"],
-              "auth": "Entra ID via Azure CLI" if not cfg["access_token"] else "Entra ID via FOUNDRY_ACCESS_TOKEN",
-          })
-          return
+        if self.path == "/api/realtime/status":
+            cfg = realtime_config()
+            self._json(200, {
+                "configured": cfg["configured"],
+                "endpoint": cfg["endpoint"],
+                "deployment": cfg["deployment"],
+                "voice": cfg["voice"],
+                "protocol": cfg["protocol"],
+                "region": cfg["region"],
+                "auth": "server-side API key" if cfg["api_key"] else "not configured",
+                "supportedRealtimeModels": cfg["supported_models"],
+            })
+            return
         return super().do_GET()
 
     def do_POST(self):
-        if self.path != "/api/foundry/chat":
+        if self.path != "/api/realtime/session":
             self._json(404, {"error": "Not found"})
             return
 
-        cfg = foundry_config()
+        cfg = realtime_config()
         if not cfg["configured"]:
-            self._json(503, {"error": "Foundry proxy not configured"})
+            self._json(503, {"error": "Realtime service not configured. Add AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_REALTIME_DEPLOYMENT, and AZURE_OPENAI_API_KEY to .env."})
             return
 
         try:
-            token = get_entra_token(cfg)
-        except RuntimeError as exc:
-            self._json(503, {"error": str(exc)})
-            return
+            length = int(self.headers.get("Content-Length", "0"))
+            request_body = json.loads(self.rfile.read(length) or b"{}")
+            instructions = build_realtime_instructions(request_body)
+            if cfg["protocol"] == "legacy-webrtc":
+                data = request_legacy_realtime_session(cfg)
+                ephemeral_token = data.get("client_secret", {}).get("value")
+                calls_url = (
+                    f"https://{cfg['region']}.realtimeapi-preview.ai.azure.com/v1/realtimertc"
+                    f"?model={cfg['deployment']}"
+                )
+                session_id = data.get("id")
+            else:
+                data = request_ga_realtime_client_secret(cfg, request_body, instructions)
+                ephemeral_token = data.get("value")
+                calls_url = f"{cfg['endpoint']}/openai/v1/realtime/calls?webrtcfilter=on"
+                session_id = data.get("id")
 
-        length = int(self.headers.get("Content-Length", "0"))
-        request_body = json.loads(self.rfile.read(length) or b"{}")
-        system_prompt = request_body.get("systemPrompt", "")
-        patient_context = request_body.get("patientContext", "")
-        requested_beat = request_body.get("requestedBeat", "")
-        fallback = request_body.get("fallback", "")
-
-        prompt = (
-            "Create one concise spoken response for a 90-second executive screen-recording demo.\n"
-            "Keep it under 38 words. Do not request PHI. Do not provide clinical advice.\n\n"
-            f"Scenario: {request_body.get('scenario', 'Patient access')}\n"
-            f"Beat: {requested_beat}\n"
-            f"Transcript so far:\n{patient_context}\n\n"
-            f"Fallback response style:\n{fallback}"
-        )
-
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0.4,
-            "max_tokens": 120,
-        }
-
-        if cfg["chat_url"]:
-            url = cfg["chat_url"]
-        else:
-            deployment = quote(cfg["deployment"], safe="")
-            url = (
-                f"{cfg['endpoint']}/openai/deployments/{deployment}/chat/completions"
-                f"?api-version={cfg['api_version']}"
-            )
-
-        req = Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token}",
-            },
-            method="POST",
-        )
-
-        try:
-            with urlopen(req, timeout=30) as response:
-                data = json.loads(response.read())
-            reply = data["choices"][0]["message"]["content"].strip()
-            self._json(200, {"reply": reply, "modelResponse": data.get("model")})
+            if not ephemeral_token:
+                self._json(502, {"error": "Azure did not return a realtime client secret."})
+                return
+            self._json(200, {
+                "token": ephemeral_token,
+                "callsUrl": calls_url,
+                "deployment": cfg["deployment"],
+                "voice": cfg["voice"],
+                "protocol": cfg["protocol"],
+                "sessionId": session_id,
+                "instructions": instructions,
+                "expiresAt": data.get("expires_at") or data.get("expiresAt"),
+            })
         except HTTPError as exc:
-            self._json(exc.code, {"error": exc.read().decode("utf-8", errors="replace")})
+            self._json(exc.code, self._azure_error(exc))
         except (URLError, TimeoutError, KeyError, json.JSONDecodeError) as exc:
             self._json(502, {"error": str(exc)})
 
 
 if __name__ == "__main__":
+    load_dotenv()
     port = int(os.environ.get("PORT", "8787"))
     server = ThreadingHTTPServer(("127.0.0.1", port), DemoHandler)
     print(f"Voice Agent demo running at http://127.0.0.1:{port}")
-    print("Foundry proxy:", "configured for Entra auth" if foundry_config()["configured"] else "not configured")
+    print("Realtime voice:", "configured" if realtime_config()["configured"] else "not configured")
     server.serve_forever()

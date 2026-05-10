@@ -79,33 +79,51 @@
             <path d="M9 9.5v5M12 8v8M15 9.5v5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
           </svg>
         </div>
-        <div>
-          <h1>Voice Agent for Patient Access</h1>
-          <p class="subtitle">A film-ready Azure Foundry scaffold for patient access, revenue cycle, and multilingual service demos.</p>
+        <div class="brand-text">
+          <h1>Northlake Health Access Console <span class="brand-mark">Voice Agent</span></h1>
+          <p class="subtitle">Realtime patient-access voice agent for scheduling, billing, language support, and safe human handoff.</p>
         </div>
       </div>
       <div class="status-strip">
-        <span class="pill"><span class="dot"></span><span id="connectionLabel">Scripted mode</span></span>
-        <span class="pill">Synthetic data only</span>
-        <span class="pill">Spec Kit planned</span>
+        <span class="pill"><span class="dot idle" id="connectionDot"></span><span id="connectionLabel">Scripted mode</span></span>
+        <span class="pill kpi">Calls today <b id="kpiCalls">312</b></span>
+        <span class="pill kpi">Containment <b id="kpiContainment">0%</b></span>
+        <span class="pill">Demo patients only</span>
       </div>
     </header>
 
     <section class="dashboard">
       <aside class="panel stack">
         <div class="panel-heading">
-          <span class="eyebrow">Director console</span>
-          <h2>Pick the story</h2>
+          <span class="eyebrow">Access center queue</span>
+          <h2>Choose call type</h2>
         </div>
         <div class="scenario-grid" id="scenarioGrid"></div>
 
         <div class="divider"></div>
 
+        <div class="queue-card">
+          <div class="queue-row">
+            <span>Live queue</span>
+            <b>14 waiting</b>
+          </div>
+          <div class="queue-row">
+            <span>Avg hold</span>
+            <b>11m</b>
+          </div>
+          <div class="queue-row">
+            <span>Agent policy</span>
+            <b>Escalate exceptions</b>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
         <label class="field">
-          <span>Demo mode</span>
+          <span>Call mode</span>
           <select id="demoMode">
             <option value="scripted">Scripted: deterministic for recording</option>
-            <option value="foundry">Foundry assist: live model replies if configured</option>
+            <option value="realtime" selected>Realtime voice: mic + GPT Realtime</option>
           </select>
         </label>
 
@@ -117,10 +135,14 @@
           <button class="btn" id="muteBtn">Voice: On</button>
           <button class="btn" id="copyScriptBtn">Copy talk track</button>
         </div>
+        <div class="button-row">
+          <button class="btn primary" id="startRealtimeBtn">Answer call</button>
+          <button class="btn danger" id="stopRealtimeBtn" disabled>End conversation</button>
+        </div>
 
         <div class="callout">
           <strong id="hookLine">This is what happens when the front door of healthcare becomes conversational, multilingual, and always available.</strong>
-          <span>Open here. Then click Start. The patient intent, agent response, and operational signal appear before the 20-second mark.</span>
+          <span>Open here. The first patient intent, safety boundary, and handoff signal should land before the 20-second mark.</span>
         </div>
       </aside>
 
@@ -135,7 +157,21 @@
 
         <div class="stage-grid">
           <div class="voice-column">
-            <div class="agent-face" id="agentFace">
+            <div class="call-banner">
+              <div>
+                <span class="eyebrow">Active caller</span>
+                <h2 id="callerTitle">Jordan Lee · Imaging access</h2>
+              </div>
+              <div class="call-badges">
+                <span class="pill">Consent: demo</span>
+                <span class="pill">PHI masked</span>
+              </div>
+            </div>
+
+            <div class="agent-face is-clickable" id="agentFace" role="button" tabindex="0" aria-label="Answer live voice call">
+              <span class="scenario-chip" id="orbScenarioChip">Patient access</span>
+              <span class="live-badge" id="orbLiveBadge"><span class="dot idle"></span><span id="orbLiveLabel">Tap mic to answer</span></span>
+              <div class="pulse"></div>
               <div class="pulse"></div>
               <div class="pulse"></div>
               <div class="orb">
@@ -153,9 +189,18 @@
           </div>
 
           <div class="ops-column">
+            <div class="patient-card">
+              <span class="eyebrow">Patient context</span>
+              <h2>Demo record</h2>
+              <div class="mini-list" id="patientContext">
+                <span>Need: reschedule or clarify instructions</span>
+                <span>Validation: name + DOB</span>
+                <span>Location: Northlake Imaging Center</span>
+              </div>
+            </div>
             <div class="metric">
               <span class="metric-value" id="containment">0%</span>
-              <span class="metric-label">Estimated containment</span>
+              <span class="metric-label">Routine calls contained</span>
             </div>
             <div class="metric">
               <span class="metric-value" id="waitTime">0m</span>
@@ -163,7 +208,7 @@
             </div>
             <div class="metric">
               <span class="metric-value" id="languages">1</span>
-              <span class="metric-label">Language-ready flow</span>
+              <span class="metric-label">Language paths ready</span>
             </div>
             <div class="action-card">
               <div class="action-card-title">Action packet</div>
@@ -173,6 +218,7 @@
         </div>
 
         <div class="timeline">
+          <div class="scene-chips" id="sceneChips"></div>
           <div class="progress-shell"><div class="progress" id="progress"></div></div>
           <div class="timecode">
             <span id="timeLabel">0:00</span>
@@ -184,23 +230,23 @@
 
       <aside class="panel stack">
         <div class="panel-heading">
-          <span class="eyebrow">Trust + architecture</span>
-          <h2>Show this to the CTO</h2>
+          <span class="eyebrow">Safety + operations</span>
+          <h2>Supervisor view</h2>
         </div>
 
         <div class="arch-map">
-          <div class="arch-node">Browser demo UI</div>
+          <div class="arch-node">Patient call</div>
           <div class="arch-arrow">to</div>
-          <div class="arch-node">Local proxy</div>
+          <div class="arch-node">Voice agent</div>
           <div class="arch-arrow">to</div>
-          <div class="arch-node">Azure Foundry model</div>
+          <div class="arch-node">Approved FAQ + policy</div>
           <div class="arch-arrow">to</div>
-          <div class="arch-node">Approved tools + handoff</div>
+          <div class="arch-node">Staff queue</div>
         </div>
 
         <div class="trust-list">
-          <div><b>No PHI:</b> synthetic scenarios only for public recording.</div>
-          <div><b>Least privilege:</b> Entra token is acquired server-side; no model credentials in browser.</div>
+          <div><b>Demo validation:</b> name and DOB only; no real PHI.</div>
+          <div><b>Least privilege:</b> API key stays in .env on the local server; browser receives only a short-lived realtime client secret.</div>
           <div><b>Escalation:</b> clinical, identity, or exception flows route to staff.</div>
           <div><b>Auditability:</b> transcript, action packet, source, and handoff state are visible.</div>
         </div>
@@ -216,10 +262,10 @@
         <div class="divider"></div>
 
         <div class="panel-heading compact">
-          <span class="eyebrow">Foundry status</span>
+          <span class="eyebrow">Realtime status</span>
           <h2 id="foundryStatus">Checking local proxy...</h2>
         </div>
-        <p class="muted" id="foundryDetail">Start with scripted mode. Enable live model responses when credentials are configured locally.</p>
+        <p class="muted" id="foundryDetail">Start with scripted mode. Enable live voice once the local token service is configured.</p>
       </aside>
     </section>
   </main>
@@ -227,6 +273,7 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script src="./scenarios.js"></script>
+  <script src="./synthetic-data.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>
