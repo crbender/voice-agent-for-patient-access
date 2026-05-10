@@ -14,6 +14,6 @@
 - No real patient data.
 - No hidden external calls during scripted demo playback.
 - Live Realtime voice requires the local Python token service; the scripted path must remain usable without Azure connectivity.
-- Preserve Clawpilot theme variables and accessible contrast.
+- Preserve theme variables and accessible contrast.
 - Keep Azure integration points documented, including model deployment, protocol, auth boundary, and fallback behavior.
 - Keep Realtime voice instructions grounded in approved synthetic knowledge and explicit staff-escalation boundaries.

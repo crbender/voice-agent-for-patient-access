@@ -1,65 +1,100 @@
 # Voice Agent for Patient Access
 
-A Spec Kit-inspired, screen-recordable executive demo scaffold for a healthcare voice-agent experience. The app runs reliably in scripted mode and can optionally use Azure OpenAI Realtime WebRTC with a supported GPT Realtime deployment.
+Executive demo for a healthcare front-door voice assistant. This project demonstrates a 90-second browser experience that combines deterministic scripted playback with optional live voice using Azure OpenAI Realtime.
 
-## Spec-driven workflow
+## Who This Is For
 
-This deployment is spec-driven. Before changing implementation files, update the Spec Kit artifacts to reflect the requested behavior and then rebuild from those specs:
+This demo is intended for healthcare technology and operations leaders who need to evaluate how conversational AI can improve the patient access experience without sacrificing governance, speed, or safe staff escalation.
 
-1. Update `specs/001-patient-access-voice-agent/spec.md` for user-facing behavior, acceptance criteria, and safety requirements.
-2. Update `specs/001-patient-access-voice-agent/plan.md` for architecture, protocol, grounding, validation, and integration changes.
-3. Update `specs/001-patient-access-voice-agent/tasks.md` for implementation tasks.
-4. Update `.specify/memory/constitution.md` only when a durable project principle or non-negotiable changes.
-5. Implement changes in `index.html`, `styles.css`, `scenarios.js`, `synthetic-data.js`, `app.js`, and `server.py` from the updated spec.
-6. Validate the app and reconcile documentation before recording.
+Typical audiences include:
 
-## What is included
+- CIO teams evaluating digital front-door modernization
+- CTO and architecture teams reviewing realtime AI patterns and security boundaries
+- COO and access-center leaders looking to reduce avoidable call friction and improve staff efficiency
 
-- `index.html` — recording-ready UI shell with Clawpilot theme support.
-- `styles.css` — polished executive command-center styling.
-- `scenarios.js` — three 90-second demo stories: patient access, revenue cycle, multilingual access.
-- `app.js` — deterministic demo runner, browser speech synthesis, scenario switching, and optional WebRTC voice session.
-- `server.py` — dependency-free static server plus `/api/realtime/*` token service.
-- `.env.example` and `env.example` — local environment templates for Azure OpenAI Realtime.
-- `.specify/` and `specs/` — local Spec Kit-style constitution, spec, plan, and tasks.
+## The Challenge
 
-## Fast launch: reliable scripted recording
+Patient access teams absorb a large amount of avoidable call friction in the first few moments of an interaction. Routine needs such as rescheduling, billing clarification, location questions, and language support often compete with higher-priority work, increasing handle times, queue pressure, and staff interruptions.
+
+This demo is designed to show a better operating model:
+
+- patients get an immediate, conversational front door
+- routine workflows stay grounded in approved policy and synthetic context
+- staff receive action-ready summaries instead of raw transcripts
+- exceptions and sensitive situations are handed off explicitly to humans
+
+The goal is not to replace care teams. The goal is to reduce administrative friction, improve access consistency, and make human staff more effective where judgment matters most.
+
+## What This Demo Shows
+
+- a browser-based patient experience that feels like a modern health-system front door
+- an executive operations console that exposes trust, status, handoff, and action-packet state
+- a deterministic 90-second story for reliable demos and recordings
+- an optional live voice path using Azure OpenAI Realtime with server-side credential protection
+
+## Architecture Overview
+
+At a high level, the demo separates the browser experience from the credentialed realtime session setup:
+
+- the browser renders patient and executive experiences
+- the local server serves static assets and mints short-lived realtime session credentials
+- Azure OpenAI Realtime handles live audio, transcription, and conversational reasoning
+- scenario grounding and synthetic policy context shape the response behavior
+- the UI surfaces action packets, trust cues, and human handoff state
+
+For a deeper walkthrough, see [docs/architecture.md](docs/architecture.md).
+
+## Highlights
+
+- Low-latency conversational UI for patient access workflows
+- Grounded scenario behavior for scheduling, billing, and language access
+- Action-packet and handoff visibility for operations teams
+- Server-side credential boundary with short-lived browser session secrets
+
+## Demo Scenarios
+
+- Patient access: rescheduling, location clarification, and prep-instruction flows
+- Revenue cycle: statement explanation and payment-plan style intake paths
+- Language access: English and Spanish support with governed escalation for interpreter needs
+
+## Product Screens
+
+### Patient Experience
+
+![Patient view](docs/images/patient-view.png)
+
+### Executive Console
+
+![Executive view](docs/images/executive-view.png)
+
+### Realtime Status Panel
+
+![Realtime status panel](docs/images/realtime-status-panel.png)
+
+![Realtime status text](docs/images/realtime-status-text.png)
+
+## Quick Start
 
 ```bash
-cd "/Users/carlbender/work/Voice Agent for Patient Access"
 python3 server.py
 ```
 
-Open:
+Open http://127.0.0.1:8787 and run the scripted demo.
 
-```text
-http://127.0.0.1:8787
-```
+For the most consistent walkthrough, start in scripted mode and use the patient access scenario first.
 
-Choose a scenario, keep **Scripted** mode selected, and click **Start 90s Demo**.
+## Optional Live Voice Setup
 
-## Optional: live voice with GPT Realtime
-
-This uses Azure OpenAI Realtime with a server-side token service. For the current `gpt-realtime-1.5` deployment, the app is configured for the preview/legacy WebRTC flow:
-
-- Server-side token minting: `/openai/realtimeapi/sessions`
-- Browser WebRTC call setup: `https://eastus2.realtimeapi-preview.ai.azure.com/v1/realtimertc`
-- Your API key stays in `.env` on the local Python server.
-- The browser receives only a short-lived realtime client secret.
-
-### 1. Create `.env`
+1. Create local environment file:
 
 ```bash
-cd "/Users/carlbender/work/Voice Agent for Patient Access"
 cp env.example .env
 ```
 
-Edit `.env` and replace only `PASTE-YOUR-KEY-HERE`. `AZURE_OPENAI_REALTIME_DEPLOYMENT` must be the deployment name of a Realtime speech-in/speech-out model, such as `gpt-realtime`, `gpt-realtime-mini`, `gpt-realtime-1.5`, `gpt-4o-realtime-preview`, or `gpt-4o-mini-realtime-preview`.
-
-Do not use `azureml://registries/azure-openai/models/gpt-realtime-whisper/versions/2026-05-07` for this WebRTC voice-agent path. That model package is not one of the GPT Realtime conversational session models accepted by `/openai/v1/realtime/client_secrets`.
+2. Set required values in `.env`:
 
 ```bash
-AZURE_OPENAI_ENDPOINT=https://YOURENDPOINT.cognitiveservices.azure.com
+AZURE_OPENAI_ENDPOINT=https://YOUR-ENDPOINT.cognitiveservices.azure.com
 AZURE_OPENAI_REALTIME_DEPLOYMENT=gpt-realtime-1.5
 AZURE_OPENAI_API_KEY=PASTE-YOUR-KEY-HERE
 AZURE_OPENAI_REALTIME_VOICE=alloy
@@ -70,72 +105,50 @@ REALTIME_TRANSCRIPTION_MODEL=whisper-1
 PORT=8787
 ```
 
-`.env` is ignored by git. Do not paste keys into `app.js`, `index.html`, screenshots, docs, or chat.
+3. Restart server and refresh browser.
 
-### 2. Restart the server
+The right panel should show Realtime voice configured.
+
+## Project Structure
+
+- `index.html`: UI shell for patient and executive views
+- `styles.css`: complete visual system and responsive behavior
+- `app.js`: runtime orchestration, demo logic, and realtime controls
+- `scenarios.js`: scripted scenario content and talk tracks
+- `synthetic-data.js`: approved synthetic grounding data
+- `server.py`: local static host plus realtime token endpoints
+- `scripts/capture_ui_screenshots.py`: automated screenshot capture utility
+
+## Repository Docs
+
+- [docs/architecture.md](docs/architecture.md): high-level system architecture and trust boundary overview
+- [CONTRIBUTING.md](CONTRIBUTING.md): contribution guidelines
+- [SECURITY.md](SECURITY.md): security reporting guidance
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md): community participation expectations
+- [SUPPORT.md](SUPPORT.md): support scope and channels
+
+## Safety and Data Handling
+
+- Use synthetic data only for demo sessions
+- Do not send PHI or production credentials through this scaffold
+- Keep API keys in `.env` (server-side only)
+
+## Disclaimer
+
+This project is a personal demo and is not affiliated with, sponsored by, or endorsed by Microsoft.
+
+Any references to Microsoft products (Azure, Copilot, etc.) are for demonstration purposes only.
+
+## Screenshot Automation
+
+Generate a fresh screenshot pack:
 
 ```bash
-python3 server.py
+./.venv/bin/python scripts/capture_ui_screenshots.py
 ```
 
-Refresh the browser. The right panel should say **Realtime voice configured**.
+Output is saved to a timestamped folder under `screenshots/`.
 
-### 3. Use the live voice moment
+## License
 
-1. Leave **Realtime voice: mic + GPT Realtime** selected in Call mode.
-2. Click **Answer call** or the large mic icon and allow microphone access.
-3. Say: “I need to reschedule my appointment.”
-4. When the agent asks for validation, use synthetic values only: “Jordan Lee, July 14, 1982.”
-5. Ask a routine location question: “What is the address for Northlake Imaging Center?”
-6. Use **End conversation** before returning to the deterministic 90-second scripted flow.
-
-For recording, use live voice as the opening wow moment, then run the scripted flow as the dependable executive narrative.
-
-The live model is grounded by passing the selected scenario's talk track and full run-of-show into the Realtime session instructions. For the most consistent output, keep your test utterances close to the script, such as “I need to reschedule my imaging appointment” or “Do I need approved prep instructions?”
-
-The live model also receives a synthetic knowledge pack from `synthetic-data.js`. Use these safe test prompts:
-
-- Patient access: “I need to reschedule my imaging appointment tomorrow morning.”
-- Patient access validation: “Jordan Lee, July 14, 1982.”
-- Patient access location: “What is the address for Northlake Imaging Center?”
-- Patient access: “Do I need to fast before my imaging visit?”
-- Patient access: “I am not sure which clinic I should go to.”
-- Revenue cycle: “I got a statement and I do not understand if insurance processed it.”
-- Revenue cycle validation: “Alex Morgan, February 3, 1975.”
-- Revenue cycle: “What happens if the payer needs more information?”
-- Multilingual access: “I prefer Spanish and need help confirming my appointment.”
-- Multilingual access validation: “Elena Garcia, September 9, 1984.”
-- Multilingual access: “I am worried I missed an instruction and need help in another language.”
-
-## Recording flow
-
-1. Start with the browser full screen.
-2. Pick **Patient access** for the strongest healthcare front-door story.
-3. Optional: click **Answer call** and speak one patient-access request.
-4. Click **Start 90s Demo**.
-5. Let the transcript, voice animation, metrics, and action packet update on screen.
-6. At the end, show the right panel: trust controls, architecture map, captions, and realtime status.
-
-## What is mocked
-
-- Operational metrics such as containment and wait avoided.
-- Tool invocation and action packet creation.
-- Human handoff state.
-- Production scheduling, identity verification, EHR, CRM, and contact-center integrations. The demo validation step uses synthetic name/date-of-birth values only.
-
-## Production integration seam
-
-The scripted UI is event-driven. Replace the scripted event source in `app.js` with Azure Realtime events, Azure Voice Live API events, or another orchestration layer while keeping these render functions:
-
-```js
-addMessage({ who, type, text });
-updateMetrics({ metrics });
-updatePacket({ packet, tag });
-setSpeaking(trueOrFalse);
-```
-
-The realtime path currently demonstrates browser microphone input, server-minted ephemeral credentials, Azure WebRTC negotiation, live model audio, and transcript events.
-
-## Safety boundary
-
-Use synthetic data for public demos. The validation step may ask for a synthetic name and synthetic date of birth to mirror common access-center protocol, but do not send real PHI, credentials, real appointment data, or real billing data through this scaffold. The API key stays server-side in `.env`; the browser never receives it.
+This project is licensed under the MIT License. See [LICENSE](LICENSE).

@@ -7,7 +7,7 @@
   <link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="16" fill="%23b11f4b"/><path d="M32 12a11 11 0 0 0-11 11v12a11 11 0 0 0 22 0V23A11 11 0 0 0 32 12Z" fill="none" stroke="white" stroke-width="5"/><path d="M16 32v3a16 16 0 0 0 32 0v-3M32 51v8M25 59h14" fill="none" stroke="white" stroke-width="5" stroke-linecap="round"/></svg>' />
   <script>
     (() => {
-      const param = new URLSearchParams(window.location.search).get("clawpilotTheme");
+      const param = new URLSearchParams(window.location.search).get("theme");
       const theme =
         param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
       document.documentElement.setAttribute("data-theme", theme);

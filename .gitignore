@@ -2,6 +2,8 @@
 .env.*
 !.env.example
 .github/copilot-instructions.md
+.venv/
+screenshots/
 
 # macOS Finder metadata
 .DS_Store
