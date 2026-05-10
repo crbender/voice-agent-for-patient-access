@@ -75,6 +75,8 @@ For a deeper walkthrough, see [docs/architecture.md](docs/architecture.md).
 
 ## Quick Start
 
+> ⚠️ Before sharing this folder, verify that `.env` does not exist. Prefer sharing from a clean git checkout or `git archive`, not by zipping your working directory.
+
 ```bash
 python3 server.py
 ```
@@ -88,7 +90,7 @@ For the most consistent walkthrough, start in scripted mode and use the patient 
 1. Create local environment file:
 
 ```bash
-cp env.example .env
+cp .env.example .env
 ```
 
 2. Set required values in `.env`:

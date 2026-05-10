@@ -1,0 +1,41 @@
+name: Prevent environment file leaks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  no-env-files:
+    name: Block tracked .env files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Fail if tracked .env files are present
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          leaked_files="$(
+            git ls-files |
+              awk '
+                {
+                  n = split($0, parts, "/")
+                  name = parts[n]
+                  if ((name == ".env" || name ~ /^\.env\./) && name != ".env.example") {
+                    print $0
+                  }
+                }
+              '
+          )"
+
+          if [[ -n "$leaked_files" ]]; then
+            echo "::error::Tracked environment files are not allowed. Remove these files from the PR:"
+            echo "$leaked_files"
+            exit 1
+          fi
+
+          echo "No tracked .env files found."

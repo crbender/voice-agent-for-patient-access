@@ -13,6 +13,7 @@ As an executive demo producer, I want a 90-second browser demo that makes an AI 
 - The artifact must distinguish mocked demo behavior from production integration points.
 - The live voice path must keep long-lived Azure OpenAI credentials server-side and expose only short-lived Realtime client secrets to the browser.
 - The Realtime model instructions must sound like a production hospital contact-center agent, not a generic AI assistant or loose demo narrator.
+- The public repository must include guardrails that prevent accidental publication of local `.env` files.
 
 ## Primary personas
 
@@ -65,3 +66,5 @@ As an executive demo producer, I want a 90-second browser demo that makes an AI 
 - `/api/realtime/status` returns configured model metadata without exposing secrets.
 - `/api/realtime/session` can mint a short-lived client secret without returning the long-lived API key.
 - Azure integration points are visible, and the scripted path remains usable if live voice is unavailable.
+- A GitHub Actions workflow fails pull requests if a tracked `.env` or `.env.*` file is present, except the approved `.env.example` template.
+- README quick start warns maintainers to verify `.env` does not exist before sharing the folder.

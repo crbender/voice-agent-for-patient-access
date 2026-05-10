@@ -1,7 +1,6 @@
 .env
 .env.*
 !.env.example
-.github/copilot-instructions.md
 .venv/
 screenshots/
 
@@ -12,3 +11,4 @@ screenshots/
 # Python build artifacts
 __pycache__/
 *.pyc
+linkedin-article.md
