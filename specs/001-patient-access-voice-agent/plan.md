@@ -44,11 +44,11 @@ Live voice instructions are built server-side from:
 - scenario-specific approved demo knowledge from `synthetic-data.js`
 - production-style voice-agent policy in `server.py`
 
-The model should sound like Northlake Health's patient access contact-center agent. It must use approved demo facts only, avoid inappropriate PHI collection, avoid clinical advice, and prepare staff-ready action packets or safe human handoffs.
+The model should sound like Riley, a warm and experienced patient access teammate at Northlake Health. It must use approved demo facts only, avoid inappropriate PHI collection, avoid clinical advice, and prepare staff-ready action packets or safe human handoffs.
 
 For realism, the agent includes a validation step that asks for caller name and date of birth before preparing an action packet. This must be framed as demo validation, use only approved demo values from the knowledge pack, avoid account/member identifiers, and never repeat a full date of birth back to the caller.
 
-The approved demo knowledge pack also includes facility location data: addresses, hours, parking notes, and simple imaging-center wayfinding guidance. The agent may answer basic location questions from this data, but must not invent or infer locations outside the approved pack.
+The approved demo knowledge pack covers the topics a real access agent typically handles: facility addresses, hours, parking, accessibility, what to bring, arrival guidance, cancellation policy, telehealth availability, Northlake MyHealth portal capabilities, payment options at a high level, records requests, prescription refill routing, test results routing, language services and interpreter availability, callback windows and SLA, and after-hours/emergency guidance. The agent may answer in-bounds questions from this pack and must offer to add anything outside it to the staff handoff.
 
 The agent-facing Realtime prompt, scenario spoken lines, action packet language, and knowledge values must not use the word "synthetic." The presenter will provide the public demo disclaimer separately.
 

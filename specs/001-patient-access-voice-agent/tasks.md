@@ -19,3 +19,6 @@ Spec-driven rule: update `spec.md`, `plan.md`, and `tasks.md` before implementat
 15. Add demo name/date-of-birth validation protocol to the scripted flow, Realtime instructions, approved demo knowledge, and docs.
 16. Add approved facility addresses, hours, parking notes, and location FAQ grounding for routine imaging-center questions.
 17. Remove the word "synthetic" from agent-facing Realtime context, scenario spoken lines, action packet text, and approved knowledge values; leave the presenter responsible for the public disclaimer.
+18. Name the agent persona Riley and warm up scripted lines and Realtime instructions to sound like an experienced contact-center teammate.
+19. Expand the approved demo knowledge pack with the topics a real access agent receives: hours/parking/accessibility, what to bring, arrival, cancellation policy, telehealth, patient portal, payment options at a high level, records requests, prescription refill routing, test results routing, language services, callback SLA, and emergency guidance.
+20. Revise scripted scenarios to include a warm greeting and one in-bounds off-script question per scenario that the agent answers helpfully from the approved knowledge pack.

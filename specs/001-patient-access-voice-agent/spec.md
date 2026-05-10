@@ -39,15 +39,17 @@ As an executive demo producer, I want a 90-second browser demo that makes an AI 
 
 ## Live voice behavior requirements
 
-- The model must identify as Northlake Health's patient access voice agent.
-- The model must ask one focused question at a time and keep each response concise.
+- The model must identify as Riley, Northlake Health's patient access voice agent.
+- The model must sound warm and conversational while remaining concise and operationally precise.
+- The model must use natural acknowledgements ("of course," "got it," "happy to help") and vary phrasing to avoid sounding scripted.
+- The model must answer common in-bounds patient-access questions from the approved knowledge pack: facility hours/parking/accessibility, what to bring, arrival time, cancellation policy, telehealth availability, Northlake MyHealth portal capabilities, payment options at a high level, language services, callback expectations.
 - The model must use only approved demo knowledge and avoid inventing appointments, balances, benefits, clinics, tool results, or policy citations.
 - The model may ask for name and date of birth for demo validation, but must not ask for account numbers, member IDs, real appointment details, symptoms, medication history, or clinical history.
 - The model must not repeat a full date of birth back to the caller; it should acknowledge validation using masked language such as "validation is complete."
 - The model must route clinical, urgent, identity, billing-dispute, hardship, and complex language-support exceptions to staff.
+- The model must direct clinical emergencies to 911 and route urgent non-emergency clinical concerns to the nurse line.
 - The model must use operational language such as approved FAQ, approved instructions, action packet, callback task, billing review packet, language access summary, staff queue, and handoff state.
 - The model must clearly state that the demo prepares a staff-ready task and does not modify live scheduling, billing, EHR, or CRM systems.
-- The model may answer simple location questions using only the approved facility names, addresses, hours, parking notes, and wayfinding guidance.
 - The agent-facing Realtime instructions, scenario lines, and knowledge values must not use the word "synthetic"; the presenter will handle the public demo disclaimer separately.
 
 ## Acceptance criteria
