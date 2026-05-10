@@ -10,7 +10,8 @@ const state = {
   remoteAudio: null,
   scriptStartedAt: 0,
   totalScenes: 0,
-  currentSceneIndex: -1
+  currentSceneIndex: -1,
+  ttsVoice: null
 };
 
 const SCENARIO_ICONS = {
@@ -193,10 +194,49 @@ function setSpeaking(isSpeaking) {
   els.agentFace.classList.toggle("is-speaking", isSpeaking);
 }
 
+function pickTtsVoice() {
+  if (!("speechSynthesis" in window)) return null;
+  const voices = window.speechSynthesis.getVoices();
+  if (!voices || voices.length === 0) return null;
+  const preferredNames = [
+    "Google US English",
+    "Microsoft Aria Online (Natural) - English (United States)",
+    "Microsoft Jenny Online (Natural) - English (United States)",
+    "Samantha",
+    "Karen",
+    "Google UK English Female"
+  ];
+  for (const name of preferredNames) {
+    const match = voices.find(v => v.name === name);
+    if (match) return match;
+  }
+  return (
+    voices.find(v => v.lang === "en-US" && /female|aria|jenny|samantha|karen/i.test(v.name)) ||
+    voices.find(v => v.lang === "en-US") ||
+    voices.find(v => v.lang && v.lang.startsWith("en")) ||
+    voices[0]
+  );
+}
+
+function ensureTtsVoice() {
+  if (state.ttsVoice) return;
+  state.ttsVoice = pickTtsVoice();
+  if (!state.ttsVoice && "speechSynthesis" in window) {
+    window.speechSynthesis.onvoiceschanged = () => {
+      state.ttsVoice = pickTtsVoice();
+    };
+  }
+}
+
 function speak(text) {
   if (state.muted || !("speechSynthesis" in window)) return;
+  ensureTtsVoice();
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
+  if (state.ttsVoice) {
+    utterance.voice = state.ttsVoice;
+    utterance.lang = state.ttsVoice.lang;
+  }
   utterance.rate = 1.03;
   utterance.pitch = 1;
   utterance.onstart = () => setSpeaking(true);
@@ -389,7 +429,6 @@ async function startRealtimeSession() {
         type: "session.update",
         session: {
           instructions: sessionData.instructions,
-          voice: sessionData.voice,
           input_audio_transcription: { model: "whisper-1" },
           turn_detection: {
             type: "server_vad",
@@ -517,4 +556,5 @@ renderScenario();
 renderScenarioCards();
 resetDemo();
 els.demoMode.value = "realtime";
+ensureTtsVoice();
 checkRealtime();
