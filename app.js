@@ -114,7 +114,6 @@ function renderScenarioCards() {
 
 function renderScenario() {
   const item = scenario();
-  const profile = (window.SYNTHETIC_KNOWLEDGE?.shared?.signedInProfiles || {})[state.scenarioKey];
   const context = {
     access: {
       caller: "Jordan Lee · Imaging access",
@@ -136,17 +135,32 @@ function renderScenario() {
   els.scenarioTitle.textContent = item.title;
   els.captionList.innerHTML = item.captions.map(caption => `<div class="caption-item">${caption}</div>`).join("");
   if (els.orbScenarioChip) els.orbScenarioChip.textContent = item.label;
-  // Site header signed-in chip
-  if (profile) {
-    if (els.siteUserName) els.siteUserName.textContent = profile.displayName;
-    if (els.siteUserAvatar) els.siteUserAvatar.textContent = profile.displayName.split(/\s+/).map(p => p[0]).slice(0, 2).join("").toUpperCase();
-    if (els.siteUserHint) {
-      els.siteUserHint.textContent = profile.languagePreference
-        ? `Signed in · ${profile.languagePreference}`
-        : `Member since ${profile.memberSince}`;
-    }
-  }
+  renderSignedInUser();
   renderSceneChips();
+}
+
+function signedInProfileForCurrentScenario() {
+  return (window.SYNTHETIC_KNOWLEDGE?.shared?.signedInProfiles || {})[state.scenarioKey] || null;
+}
+
+function renderSignedInUser() {
+  const profile = signedInProfileForCurrentScenario();
+  if (!profile) return;
+  if (els.siteUserName) els.siteUserName.textContent = profile.displayName;
+  if (els.siteUserAvatar) {
+    els.siteUserAvatar.textContent = profile.displayName
+      .split(/\s+/)
+      .map(p => p[0])
+      .filter(Boolean)
+      .slice(0, 2)
+      .join("")
+      .toUpperCase();
+  }
+  if (els.siteUserHint) {
+    els.siteUserHint.textContent = profile.languagePreference
+      ? `Signed in · ${profile.languagePreference}`
+      : `Member since ${profile.memberSince}`;
+  }
 }
 
 function renderSceneChips() {
@@ -755,7 +769,7 @@ function renderSitePage() {
 function renderPortalPreview() {
   const host = document.getElementById("portalPreview");
   if (!host) return;
-  const profile = (window.SYNTHETIC_KNOWLEDGE?.shared?.signedInProfiles || {})[state.scenarioKey];
+  const profile = signedInProfileForCurrentScenario();
   if (!profile) { host.innerHTML = ""; return; }
   let body = "";
   if (profile.upcomingAppointment) {
@@ -836,6 +850,9 @@ function openAssistantPanel() {
   if (els.agentSurface && els.assistantSlot && els.agentSurface.parentElement !== els.assistantSlot) {
     els.assistantSlot.appendChild(els.agentSurface);
   }
+  // Re-render in case state changed while the panel was closed
+  renderSignedInUser();
+  renderPortalPreview();
   els.assistantPanel.classList.add("open");
   els.assistantPanel.setAttribute("aria-hidden", "false");
   const focusTarget = els.patientStartBtn || els.assistantPanelClose;
