@@ -380,6 +380,8 @@ async function startRealtimeSession() {
   els.startRealtimeBtn.disabled = true;
   els.startRealtimeBtn.textContent = "Connecting...";
   els.stopRealtimeBtn.disabled = false;
+  if (els.patientStartBtn) { els.patientStartBtn.disabled = true; els.patientStartBtn.textContent = "Connecting..."; }
+  if (els.patientStopBtn) els.patientStopBtn.disabled = false;
   addMessage({ who: "Realtime setup", type: "system", text: "Minting short-lived client secret. Your API key stays on the local server." });
 
   try {
@@ -425,7 +427,7 @@ async function startRealtimeSession() {
       const s = peerConnection.connectionState;
       if (s === "connected") {
         setConnectionState("live", "Live voice");
-        if (els.orbLiveLabel) els.orbLiveLabel.textContent = "Conversation live";
+        if (els.orbLiveLabel) els.orbLiveLabel.textContent = isPatientView() ? "Tap mic to end" : "Conversation live";
       } else if (s === "failed" || s === "disconnected") {
         setConnectionState("error", `Voice: ${s}`);
       } else {
@@ -483,6 +485,7 @@ async function startRealtimeSession() {
     if (!sdpResponse.ok) throw new Error(await sdpResponse.text());
     await peerConnection.setRemoteDescription({ type: "answer", sdp: await sdpResponse.text() });
     els.startRealtimeBtn.textContent = "Conversation live";
+    if (els.patientStartBtn) els.patientStartBtn.textContent = "Conversation live";
     showToast("Live realtime voice connected.");
   } catch (error) {
     addMessage({ who: "Realtime error", type: "system", text: error.message || String(error) });
@@ -527,8 +530,10 @@ function stopRealtimeSession() {
   els.startRealtimeBtn.disabled = false;
   els.startRealtimeBtn.textContent = "Answer call";
   els.stopRealtimeBtn.disabled = true;
+  if (els.patientStartBtn) { els.patientStartBtn.disabled = false; els.patientStartBtn.textContent = "Start conversation"; }
+  if (els.patientStopBtn) els.patientStopBtn.disabled = true;
   els.agentFace.classList.remove("is-live");
-  if (els.orbLiveLabel) els.orbLiveLabel.textContent = "Tap mic to answer";
+  if (els.orbLiveLabel) els.orbLiveLabel.textContent = isPatientView() ? "Tap mic to chat" : "Tap mic to answer";
   setSpeaking(false);
   setConnectionState(state.realtimeAvailable ? "ready" : "idle", state.realtimeAvailable ? "Realtime-ready" : "Scripted mode");
 }
@@ -557,13 +562,25 @@ els.demoMode.addEventListener("change", () => {
     showToast("Realtime voice selected, but the token service is not configured yet.");
   }
 });
+function isPatientView() {
+  return document.body.dataset.view === "patient";
+}
+
+function toggleRealtimeSession() {
+  if (state.peerConnection) {
+    stopRealtimeSession();
+  } else {
+    startRealtimeSession();
+  }
+}
+
 els.startRealtimeBtn.addEventListener("click", startRealtimeSession);
 els.stopRealtimeBtn.addEventListener("click", stopRealtimeSession);
-els.agentFace.addEventListener("click", startRealtimeSession);
+els.agentFace.addEventListener("click", toggleRealtimeSession);
 els.agentFace.addEventListener("keydown", event => {
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
-    startRealtimeSession();
+    toggleRealtimeSession();
   }
 });
 
@@ -739,6 +756,14 @@ function setView(view) {
   const target = view === "patient" ? els.assistantSlot : els.executiveAgentSlot;
   if (target && els.agentSurface && els.agentSurface.parentElement !== target) {
     target.appendChild(els.agentSurface);
+  }
+  // Update orb label for the current view + state
+  if (els.orbLiveLabel) {
+    if (state.peerConnection) {
+      els.orbLiveLabel.textContent = view === "patient" ? "Tap mic to end" : "Conversation live";
+    } else {
+      els.orbLiveLabel.textContent = view === "patient" ? "Tap mic to chat" : "Tap mic to answer";
+    }
   }
   // Closing the panel makes sense when leaving patient view
   if (view === "executive") closeAssistantPanel();
