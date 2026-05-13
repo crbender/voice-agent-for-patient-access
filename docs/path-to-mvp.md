@@ -14,17 +14,17 @@ health system.
 
 ## TL;DR
 
-The demo proves the *operating pattern*: realtime voice + grounding + action
-packet + explicit human handoff, with a clean trust boundary.
+The demo proves the *operating pattern*: realtime voice, grounded answers,
+action packets, and explicit human handoff inside a clean trust boundary.
 
-An MVP turns that pattern into a **bounded, observable, integrated service**
-that a real access center can put in front of a small number of real patients,
-for a small number of low-risk workflows, with safety rails that satisfy
-clinical, compliance, security, and operations leaders.
+An MVP makes that pattern real for a narrow set of low-risk patient-access
+workflows. It is not a smarter demo. It is a **bounded, observable, integrated
+service** that can be safely exposed to a limited patient population with
+clinical, compliance, security, and operations oversight.
 
-The shortest honest answer: expect to invest in **identity, integration,
-grounding, governance, and operations** before you invest in more agent
-"intelligence."
+The shortest honest answer: invest in **identity, integration, grounding,
+governance, evaluation, and access-center operations** before investing in more
+agent "intelligence."
 
 ---
 
@@ -59,8 +59,10 @@ A useful MVP definition has four properties:
    (scheduling system, location database, policy doc, etc.).
 3. **Observable** — every session produces a structured action packet, a
    transcript, and a decision trail an auditor can read.
-4. **Integrated** — at least one real downstream system is updated as a result
-   of the call (e.g., a reschedule actually moves the appointment).
+4. **Integrated** — at least one real downstream workflow is completed through
+   a governed integration path. For early MVP, the agent may propose the action
+   and a human or deterministic backend service may commit it. Direct
+   autonomous writes should require separate approval gates.
 
 If any of those four are missing, it is still a prototype.
 
@@ -80,6 +82,19 @@ defensible identity strategy, typically layered:
   one-time code via SMS or email, or transfer to a human for verification.
 - **Negative paths:** what happens on mismatch, partial match, minor accounts,
   guardianship, and shared phone numbers.
+
+Identity confidence should map directly to allowed actions. For example:
+
+- **Low confidence:** answer general location, parking, hours, and policy
+  questions only.
+- **Medium confidence:** discuss appointment existence at a limited level and
+  create a callback or action packet.
+- **High confidence:** allow governed workflow actions such as a proposed
+  reschedule or cancellation.
+- **Failed or ambiguous match:** do not disclose account-specific information;
+  route to staff.
+
+The agent's scope should be determined by confidence, not just by intent.
 
 ### What about minors, caregivers, and proxy access?
 
@@ -131,10 +146,13 @@ If the agent cannot ground an answer, it should say so and offer a handoff.
 
 ### Is this a medical device?
 
-For the workflows above, almost certainly not — but that determination is a
-regulatory question, not an engineering one. Document the intended use, the
-exclusion list, and the escalation behavior, and review with your regulatory
-and clinical leadership early. Re-review whenever the intent list expands.
+Do not assume. For the administrative workflows described here, the intended
+use should be documented as non-diagnostic and non-treatment-related, with
+explicit exclusions for triage, clinical advice, diagnosis, medication
+guidance, and urgency assessment. Whether the solution falls under any
+medical-device or clinical-software regulatory framework is a formal
+determination for regulatory and clinical leadership. Re-review whenever the
+intent list expands.
 
 ### What clinical governance is required?
 
@@ -151,8 +169,9 @@ At a minimum:
 
 This is provider- and counsel-specific, but plan for:
 
-- A **Business Associate Agreement** with your model and infrastructure
-  providers (e.g., Microsoft for Azure OpenAI).
+- A **Business Associate Agreement**, where required, with infrastructure,
+  model, contact-center, integration, analytics, and support providers
+  involved in handling PHI.
 - A documented **minimum necessary** data flow — the agent should see only
   what it needs.
 - **Encryption in transit and at rest**, including audio and transcripts.
@@ -240,6 +259,74 @@ you do not have an MVP yet.
 
 ---
 
+## Evaluation
+
+### What should the evaluation set cover?
+
+Before pilot expansion, define a golden evaluation set that includes:
+
+- Routine successful scheduling scenarios
+- Routine cancellation scenarios
+- Location, parking, accessibility, and arrival questions
+- Statement explanation questions
+- Spanish language-preference scenarios
+- Low-confidence identity scenarios
+- Proxy or caregiver ambiguity scenarios
+- Emergency mentions
+- Clinical symptom mentions
+- Billing dispute and hardship scenarios
+- Prompt-injection attempts through user speech
+- Prompt-injection attempts through retrieved content
+- Low-quality audio and accent variation scenarios
+
+Each scenario should define:
+
+- expected intent
+- allowed response
+- required escalation behavior
+- required action-packet fields
+- grounding source
+- failure conditions
+
+### MVP release gates
+
+The MVP should not expand scope until the current intent set clears explicit
+gates.
+
+1. **Safety gate** — No clinical advice, diagnosis, urgency assessment,
+   medication guidance, balance quoting, hardship decisioning, or unauthorized
+   identity disclosure in test scenarios. Emergency and clinical-uncertainty
+   paths consistently route to the approved escalation behavior.
+2. **Grounding gate** — Factual answers are traceable to approved sources.
+   Ungrounded or conflicting answers result in a handoff, not model
+   improvisation.
+3. **Handoff gate** — Every escalation includes a reason code, concise summary,
+   relevant transcript snippet, requested next action, and known unknowns.
+4. **Integration gate** — Proposed actions match source-system constraints.
+   Any committed write is performed by a governed workflow, not by free-form
+   model output.
+5. **Operations gate** — Access-center staff can review, correct, and flag
+   sessions. Overrides and corrections are captured for improvement.
+6. **Security and privacy gate** — Session credentials are scoped and
+   short-lived. PHI access follows minimum-necessary design. Logs,
+   transcripts, and action packets follow approved retention and access
+   controls.
+
+### Kill criteria
+
+Pause or roll back the MVP if:
+
+- The agent provides clinical advice or urgency assessment outside scope.
+- Identity ambiguity leads to disclosure of account-specific information.
+- Staff correction rates remain above the agreed threshold for a workflow.
+- Escalations lack enough context for staff to act safely.
+- Grounding sources are stale, contradictory, or not traceable.
+- Latency or dropped-call rates materially degrade patient experience.
+- Compliance, clinical, security, or operations owners lose confidence in the
+  control model.
+
+---
+
 ## Architecture and engineering
 
 ### What in the demo is reusable, and what gets replaced?
@@ -262,6 +349,35 @@ Replaced for MVP:
 - Local `.env` → managed secrets and per-environment configuration
 - Browser-only state → durable session, transcript, and action-packet
   storage with retention policy
+
+### Model as interface, not as workflow authority
+
+The MVP should treat the model as a conversational interface and reasoning
+component, not as the workflow authority. State transitions such as identity
+verified, appointment selected, reschedule proposed, human handoff required,
+and action committed should be represented explicitly in application state.
+This protects the MVP from becoming a prompt-only system.
+
+### Minimum action-packet schema
+
+An MVP action packet should include:
+
+- session ID
+- patient match confidence level
+- authenticated or verified factors used
+- detected intent
+- allowed workflow path
+- summary for staff
+- requested patient action
+- proposed system action, if any
+- escalation reason code
+- grounding sources used
+- transcript snippet supporting the handoff
+- unresolved questions
+- language preference and interpreter need, if applicable
+- callback preference, if captured
+- staff disposition
+- audit metadata
 
 ### What does a realistic MVP architecture look like?
 
@@ -341,9 +457,12 @@ headcount.
 
 ### How long until MVP?
 
-Variable, and dependent almost entirely on integration and governance, not on
-model capability. Plan in quarters, not weeks, and plan the governance work in
-parallel with the engineering work, not after it.
+It depends less on model capability and more on integration readiness,
+governance decisions, identity design, and operational change management. The
+right planning unit is not "how fast can we wire up voice," but "which
+workflows have cleared the required safety, integration, compliance, and
+operational readiness gates." Plan the governance work in parallel with the
+engineering work, not after it.
 
 ### Why not just use an off-the-shelf IVR or chatbot?
 
