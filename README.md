@@ -124,6 +124,7 @@ The right panel should show Realtime voice configured.
 ## Repository Docs
 
 - [docs/architecture.md](docs/architecture.md): high-level system architecture and trust boundary overview
+- [docs/path-to-mvp.md](docs/path-to-mvp.md): forward-looking FAQ on what it would take to evolve this demo into a real MVP
 - [CONTRIBUTING.md](CONTRIBUTING.md): contribution guidelines
 - [SECURITY.md](SECURITY.md): security reporting guidance
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md): community participation expectations
@@ -150,6 +151,12 @@ Generate a fresh screenshot pack:
 ```
 
 Output is saved to a timestamped folder under `screenshots/`.
+
+## From Demo to MVP
+
+This repo is a demo, not a product. If you are wondering what it would take to move a pattern like this toward a real MVP in a health system, see [docs/path-to-mvp.md](docs/path-to-mvp.md).
+
+It is a forward-looking FAQ covering scope, identity, EHR integration, grounding, clinical and HIPAA governance, security, operations and telemetry, architecture evolution, and rollout stages. It is a starting frame for stakeholder conversations, not implementation guidance for any specific organization.
 
 ## License
 
