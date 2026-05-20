@@ -202,12 +202,20 @@ session credentials for the browser. That pattern is the right shape. For MVP,
 extend it with:
 
 - A hardened token-minting service with rate limits and abuse detection.
+- Server-side WebRTC session lifecycle management, not just ephemeral-token
+  retrieval. The service should track session state, authorize tools, revoke or
+  expire sessions, and own audit events.
 - Per-tenant and per-user scoping on session credentials.
 - Strict CORS, CSP, and origin checks on the browser side.
 - Secret management via a real vault (Azure Key Vault, AWS Secrets Manager,
   HashiCorp Vault), not `.env` files.
 - Network egress controls so the model endpoint, EHR, and identity provider
   are the only outbound destinations from the service.
+- Explicit session and cache management: no patient-specific content in shared
+  browser storage, CDN caches, or proxy caches; defined TTLs for session state;
+  and clear teardown behavior when calls end.
+- PHI screening and minimization before content is sent to model prompts,
+  transcripts, logs, analytics, or staff handoff surfaces.
 - Threat modeling for prompt injection via grounding data, transcripts, and
   user speech.
 
@@ -308,9 +316,10 @@ gates.
 5. **Operations gate** — Access-center staff can review, correct, and flag
    sessions. Overrides and corrections are captured for improvement.
 6. **Security and privacy gate** — Session credentials are scoped and
-   short-lived. PHI access follows minimum-necessary design. Logs,
-   transcripts, and action packets follow approved retention and access
-   controls.
+    short-lived. PHI access follows minimum-necessary design. Logs,
+    transcripts, and action packets follow approved retention and access
+    controls. CORS/CSP, cache policy, and PHI screening controls are tested
+    rather than documented only.
 
 ### Kill criteria
 
@@ -386,7 +395,8 @@ A reasonable shape:
 - **Browser client** for the patient surface and the staff console.
 - **Edge / API layer** for auth, rate limiting, and routing.
 - **Session service** that mints realtime credentials, manages call state,
-  and enforces the intent list.
+  enforces the intent list, controls WebRTC session lifecycle, and owns audit
+  events.
 - **Tooling layer** that exposes a small, typed set of actions (lookup
   appointment, propose reschedule, fetch location info, route to interpreter,
   create action packet).
@@ -395,6 +405,8 @@ A reasonable shape:
   services.
 - **Observability stack** for transcripts, action packets, metrics, and audit
   logs.
+- **Privacy and policy layer** for PHI minimization, screening, retention, and
+  access decisions before content reaches model, storage, or analytics systems.
 - **Admin surface** for intent-list changes, prompt updates, and review
   workflows, all under change control.
 

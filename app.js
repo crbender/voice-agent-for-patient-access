@@ -6,12 +6,35 @@ const state = {
   realtimeAvailable: false,
   peerConnection: null,
   dataChannel: null,
+  handledToolCalls: new Set(),
+  toolCallArgumentDeltas: new Map(),
+  toolCallNames: new Map(),
+  pendingToolTimers: new Map(),
+  pendingToolStatuses: new Set(),
+  schedulingFallbacks: new Set(),
+  schedulingWindowsHandled: new Set(),
+  voiceVerified: false,
+  callerVerificationProvided: false,
+  liveConversationHints: {
+    languagePreference: "",
+    caregiverContext: ""
+  },
+  agentTranscriptBuffer: "",
+  agentAudioTurnText: "",
+  agentAudioSegments: [],
+  agentAudioTurnStarted: false,
+  callbackDriftCancelled: false,
+  lastCallerTranscript: "",
+  callerVerificationText: "",
   localStream: null,
   remoteAudio: null,
+  realtimeEventLog: [],
+  audioPlaybackLog: [],
   scriptStartedAt: 0,
   totalScenes: 0,
   currentSceneIndex: -1,
-  ttsVoice: null
+  ttsVoice: null,
+  currentUtterance: null
 };
 
 const SCENARIO_ICONS = {
@@ -22,6 +45,10 @@ const SCENARIO_ICONS = {
 
 const AVATAR_AGENT = '<svg viewBox="0 0 24 24" fill="none"><path d="M5 11a7 7 0 0 1 14 0v3a7 7 0 0 1-14 0z" stroke="currentColor" stroke-width="1.8"/><path d="M9 9.5v5M12 8v8M15 9.5v5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 const AVATAR_SYSTEM = '<svg viewBox="0 0 24 24" fill="none"><path d="M12 3l9 5-9 5-9-5 9-5z" stroke="currentColor" stroke-width="1.8"/><path d="M3 13l9 5 9-5" stroke="currentColor" stroke-width="1.8"/></svg>';
+
+const SCHEDULING_TOOL_NAME = "confirm_appointment_reschedule";
+const DEBUG_REALTIME = new URLSearchParams(window.location.search).has("debugRealtime") ||
+  window.localStorage?.getItem("voiceDemoDebug") === "1";
 
 const els = {
   scenarioGrid: document.getElementById("scenarioGrid"),
@@ -235,8 +262,57 @@ function updatePacket(item) {
   }
 }
 
+function setActionPacketLines(lines, tag = "Confirmed") {
+  els.actionPacket.innerHTML = lines.map(line => `<span>${escapeHtml(line)}</span>`).join("");
+  els.handoffTag.textContent = tag;
+  els.handoffTag.classList.toggle("hot", tag !== "Complete" && tag !== "Confirmed");
+  els.handoffTag.classList.toggle("complete", tag === "Complete" || tag === "Confirmed");
+}
+
 function setSpeaking(isSpeaking) {
   els.agentFace.classList.toggle("is-speaking", isSpeaking);
+}
+
+function logAudioPlayback(eventName, detail = {}) {
+  const entry = {
+    at: new Date().toISOString(),
+    event: eventName,
+    ...detail
+  };
+  state.audioPlaybackLog.push(entry);
+  if (state.audioPlaybackLog.length > 80) state.audioPlaybackLog.shift();
+  if (DEBUG_REALTIME) console.debug("[realtime-audio]", entry);
+}
+
+function logRealtimeEvent(event) {
+  const entry = {
+    at: new Date().toISOString(),
+    type: event.type,
+    itemType: event.item?.type || event.output_item?.type,
+    itemName: event.item?.name || event.output_item?.name || event.name,
+    callId: event.call_id || event.item?.call_id || event.output_item?.call_id,
+    hasTranscript: Boolean(event.transcript || event.text || event.delta)
+  };
+  state.realtimeEventLog.push(entry);
+  if (state.realtimeEventLog.length > 160) state.realtimeEventLog.shift();
+  if (DEBUG_REALTIME) console.debug("[realtime-event]", entry);
+}
+
+function ensureRemoteAudioPlayback(reason = "realtime-audio") {
+  const audio = state.remoteAudio;
+  if (!audio || !audio.srcObject) {
+    logAudioPlayback("play-skipped", { reason, hasAudio: Boolean(audio), hasSrcObject: Boolean(audio?.srcObject) });
+    return;
+  }
+  const playPromise = audio.play();
+  if (playPromise && typeof playPromise.catch === "function") {
+    playPromise
+      .then(() => logAudioPlayback("play-resolved", { reason, paused: audio.paused, readyState: audio.readyState }))
+      .catch(error => {
+        logAudioPlayback("play-rejected", { reason, message: error.message, name: error.name });
+        setConnectionState("warn", `Audio blocked: ${error.message || reason}`);
+    });
+  }
 }
 
 function pickTtsVoice() {
@@ -284,9 +360,16 @@ function speak(text) {
   }
   utterance.rate = 1.03;
   utterance.pitch = 1;
+  state.currentUtterance = utterance;
   utterance.onstart = () => setSpeaking(true);
-  utterance.onend = () => setSpeaking(false);
-  utterance.onerror = () => setSpeaking(false);
+  utterance.onend = () => {
+    if (state.currentUtterance === utterance) state.currentUtterance = null;
+    setSpeaking(false);
+  };
+  utterance.onerror = () => {
+    if (state.currentUtterance === utterance) state.currentUtterance = null;
+    setSpeaking(false);
+  };
   window.speechSynthesis.speak(utterance);
 }
 
@@ -297,6 +380,7 @@ function clearTimers() {
   });
   state.timers = [];
   window.speechSynthesis?.cancel();
+  state.currentUtterance = null;
   setSpeaking(false);
 }
 
@@ -412,9 +496,11 @@ async function startRealtimeSession() {
   els.stopRealtimeBtn.disabled = false;
   if (els.patientStartBtn) { els.patientStartBtn.disabled = true; els.patientStartBtn.textContent = "Connecting..."; }
   if (els.patientStopBtn) els.patientStopBtn.disabled = false;
-  addMessage({ who: "Realtime setup", type: "system", text: "Minting short-lived client secret. Your API key stays on the local server." });
+  showToast("Connecting to Riley...");
 
   try {
+    state.realtimeEventLog = [];
+    state.audioPlaybackLog = [];
     const sessionResponse = await fetch("/api/realtime/session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -444,14 +530,61 @@ async function startRealtimeSession() {
     }
 
     const peerConnection = new RTCPeerConnection();
-    const remoteAudio = new Audio();
+    const remoteAudio = document.createElement("audio");
+    remoteAudio.id = "realtimeRemoteAudio";
     remoteAudio.autoplay = true;
+    remoteAudio.playsInline = true;
+    remoteAudio.preload = "auto";
+    remoteAudio.style.position = "fixed";
+    remoteAudio.style.left = "-9999px";
+    remoteAudio.style.width = "1px";
+    remoteAudio.style.height = "1px";
+    remoteAudio.setAttribute("aria-hidden", "true");
+    document.body.appendChild(remoteAudio);
     state.peerConnection = peerConnection;
     state.remoteAudio = remoteAudio;
     els.agentFace.classList.add("is-live");
 
     peerConnection.ontrack = event => {
       remoteAudio.srcObject = event.streams[0];
+      remoteAudio.muted = false;
+      remoteAudio.volume = 1;
+      logAudioPlayback("track", {
+        kind: event.track.kind,
+        streams: event.streams.length,
+        trackMuted: event.track.muted,
+        trackState: event.track.readyState
+      });
+      event.track.onmute = () => logAudioPlayback("track-muted", { trackState: event.track.readyState });
+      event.track.onunmute = () => {
+        logAudioPlayback("track-unmuted", { trackState: event.track.readyState });
+        ensureRemoteAudioPlayback("remote-track-unmuted");
+      };
+      event.track.onended = () => logAudioPlayback("track-ended", { trackState: event.track.readyState });
+      remoteAudio.onloadstart = () => logAudioPlayback("loadstart");
+      remoteAudio.oncanplay = () => logAudioPlayback("canplay", { readyState: remoteAudio.readyState });
+      remoteAudio.onplay = () => logAudioPlayback("play", { currentTime: remoteAudio.currentTime });
+      remoteAudio.onplaying = () => {
+        logAudioPlayback("playing", { currentTime: remoteAudio.currentTime });
+        setSpeaking(true);
+      };
+      remoteAudio.onpause = () => {
+        logAudioPlayback("pause", { currentTime: remoteAudio.currentTime, connectionState: state.peerConnection?.connectionState });
+        if (state.peerConnection && state.peerConnection.connectionState === "connected") {
+          ensureRemoteAudioPlayback("remote-audio-paused");
+        }
+      };
+      remoteAudio.onwaiting = () => logAudioPlayback("waiting", { readyState: remoteAudio.readyState });
+      remoteAudio.onstalled = () => logAudioPlayback("stalled", { readyState: remoteAudio.readyState });
+      remoteAudio.onended = () => {
+        logAudioPlayback("ended");
+        setSpeaking(false);
+      };
+      remoteAudio.onerror = () => {
+        logAudioPlayback("error", { code: remoteAudio.error?.code, message: remoteAudio.error?.message });
+        setConnectionState("warn", "Audio playback issue");
+      };
+      ensureRemoteAudioPlayback("remote-track");
       setSpeaking(true);
     };
     peerConnection.onconnectionstatechange = () => {
@@ -466,24 +599,39 @@ async function startRealtimeSession() {
       }
     };
 
-    state.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    state.localStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      }
+    });
     state.localStream.getTracks().forEach(track => peerConnection.addTrack(track, state.localStream));
 
     const dataChannel = peerConnection.createDataChannel("realtime-channel");
     state.dataChannel = dataChannel;
     dataChannel.addEventListener("open", () => {
-      addMessage({ who: "Realtime voice", type: "system", text: "Live microphone session is open. Say: I need to reschedule my appointment." });
+      showToast("Riley is ready.");
       dataChannel.send(JSON.stringify({
         type: "session.update",
         session: {
+          type: "realtime",
           instructions: sessionData.instructions,
-          input_audio_transcription: { model: "whisper-1" },
-          turn_detection: {
-            type: "server_vad",
-            threshold: 0.5,
-            prefix_padding_ms: 300,
-            silence_duration_ms: 500,
-            create_response: true
+          tools: sessionData.tools || [],
+          tool_choice: "auto",
+          output_modalities: ["audio"],
+          audio: {
+            input: {
+              transcription: { model: sessionData.transcriptionModel || "whisper-1" },
+              turn_detection: {
+                type: "server_vad",
+                threshold: 0.35,
+                prefix_padding_ms: 500,
+                silence_duration_ms: 1050,
+                create_response: true
+              }
+            },
+            output: { voice: sessionData.voice || "alloy" }
           }
         }
       }));
@@ -494,11 +642,17 @@ async function startRealtimeSession() {
           role: "user",
           content: [{
             type: "input_text",
-            text: `Start the ${scenario().label} demo. Ask one concise patient-access opening question, then stay grounded in the approved run-of-show.`
+            text: `A signed-in Northlake MyHealth user opened the live voice assistant for the ${scenario().label} workflow. Start naturally as Riley, acknowledge the MyHealth sign-in, and perform voice-channel verification before handling any request or mentioning appointment-specific details. Ask only for the caller's name and date of birth. After verification, follow the caller's intent naturally; they may confirm the visit, ask an access question, request a reschedule, choose an offered slot, or change direction.`
           }]
         }
       }));
-      dataChannel.send(JSON.stringify({ type: "response.create" }));
+      dataChannel.send(JSON.stringify({
+        type: "response.create",
+        response: {
+          output_modalities: ["audio"],
+          instructions: "Respond with audio. Start with a brief Riley greeting, acknowledge the signed-in MyHealth context, and ask for voice-channel verification with name and date of birth. Do not mention appointment-specific details or handle the caller's request until verification is complete. End with that verification question so the caller knows exactly what to do next."
+        }
+      }));
     });
     dataChannel.addEventListener("message", event => handleRealtimeEvent(event.data));
     dataChannel.addEventListener("close", () => setSpeaking(false));
@@ -531,22 +685,605 @@ function handleRealtimeEvent(rawMessage) {
   } catch {
     return;
   }
+  logRealtimeEvent(event);
 
   if (event.type === "conversation.item.input_audio_transcription.completed" && event.transcript) {
+    state.lastCallerTranscript = event.transcript;
     addMessage({ who: "Caller", type: "patient", text: event.transcript });
+    updateVoiceVerificationFromCallerText(event.transcript);
+    updateLiveConversationHints(event.transcript);
   }
-  if ((event.type === "response.output_audio_transcript.done" || event.type === "response.output_text.done") && (event.transcript || event.text)) {
-    addMessage({ who: "Realtime agent", type: "agent", text: event.transcript || event.text });
+  if (event.type === "response.output_audio_transcript.done" && event.transcript) {
+    const agentText = event.transcript;
+    state.agentAudioSegments.push(agentText);
+    updateLiveStateFromAgentText(agentText);
+    state.callbackDriftCancelled = false;
   }
-  if (event.type === "response.output_audio_transcript.delta" || event.type === "output_audio_buffer.started") {
+  if (event.type === "response.output_text.done" && event.text) {
+    updateLiveStateFromAgentText(event.text);
+  }
+  if (event.type === "response.output_audio_transcript.delta" && event.delta) {
+    state.agentTranscriptBuffer += event.delta;
+    state.agentAudioTurnText += event.delta;
+    ensureRemoteAudioPlayback("audio-transcript-delta");
     setSpeaking(true);
   }
-  if (event.type === "output_audio_buffer.stopped" || event.type === "response.done") {
+  if (event.type === "output_audio_buffer.started") {
+    state.agentAudioTurnStarted = true;
+    state.agentAudioTurnText = "";
+    state.agentAudioSegments = [];
+    state.agentTranscriptBuffer = "";
+    ensureRemoteAudioPlayback("output-audio-started");
+    setSpeaking(true);
+  }
+  if (event.type === "output_audio_buffer.stopped") {
+    flushAgentAudioTurn();
     setSpeaking(false);
   }
   if (event.type === "error" && event.error?.message) {
     addMessage({ who: "Realtime error", type: "system", text: event.error.message });
   }
+  maybeHandleRealtimeToolCall(event);
+}
+
+function flushAgentAudioTurn() {
+  const segments = state.agentAudioSegments.map(normalizeWhitespace).filter(Boolean);
+  const text = segments.length
+    ? cleanAgentTurn(segments.join(" "))
+    : cleanAgentTurn(state.agentAudioTurnText);
+  if (text) {
+    addMessage({ who: "Riley", type: "agent", text });
+    updateLiveStateFromAgentText(text);
+  }
+  state.agentAudioTurnText = "";
+  state.agentAudioSegments = [];
+  state.agentTranscriptBuffer = "";
+  state.agentAudioTurnStarted = false;
+  state.callbackDriftCancelled = false;
+}
+
+function normalizeWhitespace(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function cleanAgentTurn(value) {
+  return normalizeWhitespace(value)
+    .replace(/^(okay,\s*)?thanks for that[—-]\s*let me think through the next scheduling step with you\.\s*/i, "")
+    .replace(/(^|\s)let me check what(?:'|’)?s available around friday\.\s*/i, " ")
+    .replace(/(^|\s)confirm that new time for you now\.\s*/i, " ")
+    .replace(/(^|\s)result shows\s+/i, " ")
+    .replace(/(^|\s)result is\s+/i, " ")
+    .replace(/^complete,\s*/i, "");
+}
+
+function maybeHandleRealtimeToolCall(event) {
+  const item = findSchedulingToolItem(event);
+  const callId = event.call_id || item?.call_id || item?.id;
+
+  if (item?.type === "function_call" && callId && item.name) {
+    state.toolCallNames.set(callId, item.name);
+  }
+
+  if (event.type === "response.function_call_arguments.delta" && event.call_id && event.delta) {
+    const current = state.toolCallArgumentDeltas.get(event.call_id) || "";
+    state.toolCallArgumentDeltas.set(event.call_id, current + event.delta);
+    if ((event.name || state.toolCallNames.get(event.call_id)) === SCHEDULING_TOOL_NAME) {
+      showSchedulingPending(event.call_id);
+    }
+    return;
+  }
+
+  const directName = event.name || event.tool_name;
+  const itemName = item?.name || item?.tool_name;
+  const knownName = callId ? state.toolCallNames.get(callId) : undefined;
+  const isArgumentDone = event.type === "response.function_call_arguments.done";
+  const isFunctionItemAdded = event.type === "response.output_item.added" && item?.type === "function_call";
+  const isFunctionItemDone = event.type === "response.output_item.done" && item?.type === "function_call";
+  const isConversationItemAdded = event.type === "conversation.item.added" && item?.type === "function_call";
+  const isConversationItemDone = event.type === "conversation.item.done" && item?.type === "function_call";
+  const isConversationItemCreatedComplete = event.type === "conversation.item.created" && item?.type === "function_call" && item?.status === "completed";
+  const isResponseDoneFunction = event.type === "response.done" && item?.type === "function_call";
+  const name = directName || itemName || knownName;
+  if (name !== SCHEDULING_TOOL_NAME) return;
+
+  if (isFunctionItemAdded || isConversationItemAdded) {
+    showSchedulingPending(callId);
+    schedulePendingToolWatchdog(callId);
+    return;
+  }
+
+  if (!isArgumentDone && !isFunctionItemDone && !isConversationItemDone && !isConversationItemCreatedComplete && !isResponseDoneFunction) return;
+
+  if (!callId || state.handledToolCalls.has(callId)) return;
+  state.handledToolCalls.add(callId);
+  clearPendingToolState(callId);
+
+  const rawArguments = event.arguments || item?.arguments || state.toolCallArgumentDeltas.get(callId) || "{}";
+  state.toolCallArgumentDeltas.delete(callId);
+  handleSchedulingToolCall(callId, rawArguments);
+}
+
+function showSchedulingPending(callId) {
+  if (!callId || state.pendingToolStatuses.has(callId)) return;
+  state.pendingToolStatuses.add(callId);
+  setActionPacketLines([
+    "Scheduling system: availability check",
+    "Scheduling system: checking availability",
+    "Status: waiting for result"
+  ], "Checking");
+}
+
+function schedulePendingToolWatchdog(callId) {
+  if (!callId || state.pendingToolTimers.has(callId)) return;
+  const timer = setTimeout(() => {
+    state.pendingToolTimers.delete(callId);
+    if (state.handledToolCalls.has(callId)) return;
+    const requestedWindow = inferSchedulingWindowFromText(state.lastCallerTranscript);
+    if (!requestedWindow) return;
+    state.handledToolCalls.add(callId);
+    runClientSchedulingFallback(requestedWindow, `watchdog:${callId}`, callId);
+  }, 1200);
+  state.pendingToolTimers.set(callId, timer);
+}
+
+function clearPendingToolWatchdog(callId) {
+  const timer = state.pendingToolTimers.get(callId);
+  if (timer) clearTimeout(timer);
+  state.pendingToolTimers.delete(callId);
+}
+
+function clearPendingToolState(callId) {
+  clearPendingToolWatchdog(callId);
+  state.pendingToolStatuses.delete(callId);
+}
+
+function findSchedulingToolItem(event) {
+  const candidates = [
+    event.item,
+    event.output_item,
+    ...(Array.isArray(event.response?.output) ? event.response.output : [])
+  ].filter(Boolean);
+  return candidates.find(item => item?.type === "function_call" && item?.name === SCHEDULING_TOOL_NAME) || candidates[0] || null;
+}
+
+async function handleSchedulingToolCall(callId, rawArguments) {
+  let args = {};
+  try {
+    args = typeof rawArguments === "string" ? JSON.parse(rawArguments || "{}") : rawArguments;
+  } catch {
+    args = {};
+  }
+
+  const payload = {
+    scenario: scenario().label,
+    scenario_key: state.scenarioKey,
+    patient_name: args.patient_name || args.patientName || "Jordan Lee",
+    requested_window: args.requested_window || args.requestedWindow || args.preferred_window || "",
+    visit_type: args.visit_type || args.visitType || "imaging",
+    facility: args.facility || "Northlake Imaging Center",
+    language_preference: args.language_preference || args.languagePreference || "",
+    caregiver_context: args.caregiver_context || args.caregiverContext || ""
+  };
+
+  if (!state.voiceVerified && callerMentionedAnyAcceptedVerificationValue()) {
+    state.voiceVerified = true;
+  }
+
+  if (state.scenarioKey === "access" && !state.voiceVerified) {
+    const result = {
+      status: "validation_required",
+      message: "Voice-channel verification is required before scheduling.",
+      next_action: "Ask for caller name and date of birth before checking appointment availability."
+    };
+    sendSchedulingFunctionOutputToRealtime(callId, result, "Ask for caller name and date of birth, then continue the scheduling workflow. Do not ask for a callback.");
+    return;
+  }
+
+  if (!payload.requested_window.trim()) {
+    const result = {
+      status: "needs_clarification",
+      message: "Scheduling needs a requested day or time window before checking availability.",
+      next_action: "Ask the caller what day or time window works best."
+    };
+    setActionPacketLines(formatSchedulingPacket(result), "Needs patient");
+    sendSchedulingFunctionOutputToRealtime(
+      callId,
+      result,
+      "Ask what day or time window works best before checking the scheduling system. Do not confirm or imply a slot is booked."
+    );
+    return;
+  }
+
+  addMessage({
+    who: "Scheduling system",
+    type: "system",
+    text: `Checking appointment availability for ${payload.requested_window}...`
+  });
+  setActionPacketLines([
+    "Scheduling system: availability check",
+    `Requested window: ${payload.requested_window}`,
+    "Scheduling system: checking availability"
+  ], "Checking");
+
+  try {
+    const startedAt = performance.now();
+    const response = await fetch("/api/demo-tools/confirm-appointment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const result = await response.json();
+    result.client_elapsed_ms = Math.round(performance.now() - startedAt);
+    if (!response.ok) throw new Error(result.error || "Scheduling tool failed.");
+
+    const resultText = formatSchedulingResult(result);
+    addMessage({ who: "Scheduling system", type: "system", text: resultText });
+    setActionPacketLines(formatSchedulingPacket(result), result.status === "confirmed" ? "Confirmed" : "Needs patient");
+    state.pendingToolStatuses.delete(callId);
+
+    sendSchedulingFunctionOutputToRealtime(
+      callId,
+      result,
+      schedulingFollowupInstructions(result)
+    );
+  } catch (error) {
+    const result = {
+      status: "error",
+      message: error.message || String(error),
+      next_action: "Route to staff queue."
+    };
+    addMessage({ who: "Scheduling system", type: "system", text: result.message });
+    state.pendingToolStatuses.delete(callId);
+    sendSchedulingFunctionOutputToRealtime(
+      callId,
+      result,
+      "Continue the call naturally. Route this to staff if the scheduling result is unavailable and do not discuss implementation details."
+    );
+  }
+}
+
+function updateLiveStateFromAgentText(text) {
+  const normalized = text.toLowerCase();
+  if (
+    (state.callerVerificationProvided || callerMentionedAnyAcceptedVerificationValue()) && (
+      normalized.includes("that matches") ||
+      normalized.includes("validation is complete") ||
+      normalized.includes("verification is complete")
+    )
+  ) {
+    state.voiceVerified = true;
+  }
+}
+
+function updateVoiceVerificationFromCallerText(text) {
+  state.callerVerificationText = normalizeVerificationText(`${state.callerVerificationText} ${text}`);
+  const normalized = state.callerVerificationText;
+  const acceptedValues = window.SYNTHETIC_KNOWLEDGE?.shared?.validationProtocol?.acceptedDemoValues || [];
+  const matchesAcceptedValue = acceptedValues.some(value =>
+    nameMatchesVerification(normalized, value.name) &&
+    dobMatchesVerification(normalized, value.dateOfBirth)
+  );
+  if (matchesAcceptedValue) {
+    state.callerVerificationProvided = true;
+    state.voiceVerified = true;
+  }
+}
+
+function callerMentionedAnyAcceptedVerificationValue() {
+  const acceptedValues = window.SYNTHETIC_KNOWLEDGE?.shared?.validationProtocol?.acceptedDemoValues || [];
+  return acceptedValues.some(value =>
+    nameMatchesVerification(state.callerVerificationText, value.name) ||
+    dobMatchesVerification(state.callerVerificationText, value.dateOfBirth)
+  );
+}
+
+function normalizeVerificationText(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[,./-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function nameMatchesVerification(normalizedText, name) {
+  const parts = normalizeVerificationText(name).split(" ").filter(Boolean);
+  return parts.length > 0 && parts.every(part => normalizedText.includes(part));
+}
+
+function dobMatchesVerification(normalizedText, dateOfBirth) {
+  const dob = new Date(dateOfBirth);
+  if (Number.isNaN(dob.getTime())) return normalizedText.includes(normalizeVerificationText(dateOfBirth));
+  const monthNames = [
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december"
+  ];
+  const month = monthNames[dob.getUTCMonth()];
+  const day = String(dob.getUTCDate());
+  const year = String(dob.getUTCFullYear());
+  const shortYear = year.slice(-2);
+  const dayOrdinalWords = {
+    "1": "first", "2": "second", "3": "third", "4": "fourth", "5": "fifth",
+    "6": "sixth", "7": "seventh", "8": "eighth", "9": "ninth", "10": "tenth",
+    "11": "eleventh", "12": "twelfth", "13": "thirteenth", "14": "fourteenth",
+    "15": "fifteenth", "16": "sixteenth", "17": "seventeenth", "18": "eighteenth",
+    "19": "nineteenth", "20": "twentieth", "21": "twenty first", "22": "twenty second",
+    "23": "twenty third", "24": "twenty fourth", "25": "twenty fifth",
+    "26": "twenty sixth", "27": "twenty seventh", "28": "twenty eighth",
+    "29": "twenty ninth", "30": "thirtieth", "31": "thirty first"
+  };
+  const spokenYears = {
+    "1975": "nineteen seventy five",
+    "1979": "nineteen seventy nine",
+    "1982": "nineteen eighty two",
+    "1984": "nineteen eighty four",
+    "1988": "nineteen eighty eight",
+    "1990": "nineteen ninety",
+    "1992": "nineteen ninety two"
+  };
+  const ordinalDay = dayOrdinalWords[day];
+  const spokenYear = spokenYears[year];
+  return (
+    normalizedText.includes(`${month} ${day} ${year}`) ||
+    normalizedText.includes(`${month} ${day}th ${year}`) ||
+    (ordinalDay && normalizedText.includes(`${month} ${ordinalDay} ${year}`)) ||
+    (ordinalDay && spokenYear && normalizedText.includes(`${month} ${ordinalDay} ${spokenYear}`)) ||
+    (spokenYear && normalizedText.includes(`${month} ${day} ${spokenYear}`)) ||
+    (spokenYear && normalizedText.includes(`${month} ${day}th ${spokenYear}`)) ||
+    normalizedText.includes(`${dob.getUTCMonth() + 1} ${day} ${year}`) ||
+    normalizedText.includes(`${String(dob.getUTCMonth() + 1).padStart(2, "0")} ${day.padStart(2, "0")} ${year}`) ||
+    normalizedText.includes(`${dob.getUTCMonth() + 1} ${day} ${shortYear}`) ||
+    normalizedText.includes(normalizeVerificationText(dateOfBirth))
+  );
+}
+
+function updateLiveConversationHints(text) {
+  const normalized = text.toLowerCase();
+  if (normalized.includes("spanish") || normalized.includes("español")) {
+    state.liveConversationHints.languagePreference = "English first, Spanish second";
+  }
+  if (normalized.includes("mom") || normalized.includes("mother")) {
+    state.liveConversationHints.caregiverContext = "mother driving";
+  }
+}
+
+function isElevenThirtyMention(normalizedText) {
+  return normalizedText.includes("11:30") ||
+    normalizedText.includes("11.30") ||
+    normalizedText.includes("1130") ||
+    normalizedText.includes("eleven thirty") ||
+    normalizedText.includes("eleven-thirty");
+}
+
+function isTenFortyFiveMention(normalizedText) {
+  return normalizedText.includes("10:45") ||
+    normalizedText.includes("10.45") ||
+    normalizedText.includes("1045") ||
+    normalizedText.includes("ten forty five") ||
+    normalizedText.includes("ten forty-five");
+}
+
+function isTwoFifteenMention(normalizedText) {
+  return normalizedText.includes("2:15") ||
+    normalizedText.includes("2.15") ||
+    normalizedText.includes("215") ||
+    normalizedText.includes("two fifteen") ||
+    normalizedText.includes("two-fifteen");
+}
+
+function inferSchedulingWindowFromText(text) {
+  const normalized = (text || "").toLowerCase();
+  if (isElevenThirtyMention(normalized)) return "Friday at 11:30 AM";
+  if (isTenFortyFiveMention(normalized)) return "Thursday at 10:45 AM";
+  if (isTwoFifteenMention(normalized)) return "Thursday at 2:15 PM";
+  if (normalized.includes("thursday") && normalized.includes("morning")) return "Thursday morning";
+  if (normalized.includes("thursday") && normalized.includes("afternoon")) return "Thursday afternoon";
+  if (normalized.includes("thursday")) return "Thursday";
+  if (normalized.includes("friday") && (normalized.includes("morning") || normalized.includes("sometime") || normalized.includes("some time"))) return "Friday morning";
+  if (normalized.includes("tomorrow morning")) return "tomorrow morning";
+  return "";
+}
+
+async function runClientSchedulingFallback(requestedWindow, stage, callId = null) {
+  if (!state.voiceVerified && callerMentionedAnyAcceptedVerificationValue()) {
+    state.voiceVerified = true;
+  }
+
+  if (state.scenarioKey === "access" && !state.voiceVerified) {
+    if (callId) {
+      sendSchedulingFunctionOutputToRealtime(
+        callId,
+        {
+          status: "validation_required",
+          message: "Voice-channel verification is required before scheduling.",
+          next_action: "Ask for caller name and date of birth before checking appointment availability."
+        },
+        "Ask for caller name and date of birth, then continue the scheduling workflow. Do not ask for a callback."
+      );
+    }
+    return;
+  }
+
+  const fallbackKey = `${stage}:${requestedWindow}`;
+  if (state.schedulingFallbacks.has(fallbackKey)) return;
+  const windowKey = requestedWindow.toLowerCase();
+  if (state.schedulingWindowsHandled.has(windowKey)) return;
+  state.schedulingFallbacks.add(fallbackKey);
+  state.schedulingWindowsHandled.add(windowKey);
+
+  const payload = {
+    scenario: scenario().label,
+    scenario_key: state.scenarioKey,
+    patient_name: "Jordan Lee",
+    requested_window: requestedWindow,
+    visit_type: "imaging",
+    facility: "Northlake Imaging Center",
+    language_preference: state.liveConversationHints.languagePreference,
+    caregiver_context: state.liveConversationHints.caregiverContext
+  };
+
+  addMessage({
+    who: "Scheduling system",
+    type: "system",
+    text: `Checking appointment availability for ${requestedWindow}...`
+  });
+  setActionPacketLines([
+    "Scheduling system: availability check",
+    `Requested window: ${requestedWindow}`,
+    "Scheduling system: checking availability"
+  ], "Checking");
+
+  try {
+    const startedAt = performance.now();
+    const response = await fetch("/api/demo-tools/confirm-appointment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const result = await response.json();
+    result.client_elapsed_ms = Math.round(performance.now() - startedAt);
+    if (!response.ok) throw new Error(result.error || "Scheduling tool failed.");
+
+    const resultText = formatSchedulingResult(result);
+    addMessage({ who: "Scheduling system", type: "system", text: resultText });
+    setActionPacketLines(formatSchedulingPacket(result), result.status === "confirmed" ? "Confirmed" : "Needs patient");
+    if (callId) {
+      sendSchedulingFunctionOutputToRealtime(
+        callId,
+        result,
+        schedulingFollowupInstructions(result)
+      );
+    }
+  } catch (error) {
+    addMessage({ who: "Scheduling system", type: "system", text: error.message || String(error) });
+  }
+}
+
+function schedulingFollowupInstructions(result) {
+  if (result.status === "options_found") {
+    return "Continue the call naturally. Offer the available scheduling options in plain language, recommend the best fit if helpful, and ask which slot works. Do not say anything is booked yet.";
+  }
+  if (result.status === "needs_clarification") {
+    return "Ask what day or time window works best before checking the scheduling system. Do not confirm or imply a slot is booked.";
+  }
+  if (result.status === "confirmed") {
+    return "Continue the call naturally. Tell the caller the scheduling system confirmed the slot and include the confirmation number. Do not end there: ask one closing next-step question, such as whether they need parking directions, prep reminders, or anything else about the visit. Do not ask for a callback.";
+  }
+  return "Continue the call naturally using the scheduling system result. End with a clear next step or bounded question. Do not discuss implementation details and do not ask for a callback unless the result says staff follow-up is required.";
+}
+
+function sendSchedulingFunctionOutputToRealtime(callId, result, instructions) {
+  if (!state.dataChannel || state.dataChannel.readyState === "closed") return;
+  const modelResult = toModelSchedulingResult(result);
+  state.dataChannel.send(JSON.stringify({
+    type: "conversation.item.create",
+    item: {
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify(modelResult)
+    }
+  }));
+  state.dataChannel.send(JSON.stringify({
+    type: "response.create",
+    response: {
+      output_modalities: ["audio"],
+      instructions
+    }
+  }));
+}
+
+function toModelSchedulingResult(result) {
+  return {
+    status: result.status,
+    patient_name: result.patient_name,
+    requested_window: result.requested_window,
+    alternate_window: result.alternate_window,
+    available_slots: result.available_slots,
+    confirmed_window: result.confirmed_window,
+    confirmation_number: result.confirmation_number,
+    visit_type: result.visit_type,
+    facility: result.facility,
+    language_preference: result.language_preference,
+    caregiver_context: result.caregiver_context,
+    reason: result.reason,
+    message: result.message,
+    next_action: result.next_action
+  };
+}
+
+function formatSchedulingResult(result) {
+  if (result.status === "confirmed") {
+    return `Confirmed ${result.visit_type || "visit"} at ${result.facility || "Northlake"} for ${result.confirmed_window}. Confirmation ${result.confirmation_number}.`;
+  }
+  if (result.status === "options_found") {
+    const slots = (result.available_slots || []).slice(0, 3).map(slot => slot.window).join("; ");
+    return `Available openings found: ${slots}.`;
+  }
+  if (result.status === "alternate_proposed") {
+    return `${result.reason || "The requested window is full."} Later same-morning opening: ${result.alternate_window}.`;
+  }
+  return result.message || "Scheduling system returned a staff handoff.";
+}
+
+function formatSchedulingPacket(result) {
+  if (result.status === "confirmed") {
+    return [
+      "Care access packet: ready",
+      "Intent: reschedule imaging",
+      "Validation: complete",
+      "Scheduling system: confirmed",
+      result.requested_window ? `Requested: ${result.requested_window}` : null,
+      `Confirmation: ${result.confirmation_number}`,
+      `Slot: ${result.confirmed_window}`,
+      `Facility: ${result.facility}`,
+      result.language_preference ? `Language: ${result.language_preference}` : null,
+      result.caregiver_context ? `Caregiver context: ${result.caregiver_context}` : null,
+      "Status: confirmed"
+    ].filter(Boolean);
+  }
+  if (result.status === "alternate_proposed") {
+    return [
+      "Care access packet: updating",
+      "Intent: reschedule imaging",
+      "Validation: complete",
+      "Scheduling system: alternate found",
+      `Requested: ${result.requested_window}`,
+      `Alternate: ${result.alternate_window}`,
+      result.language_preference ? `Language: ${result.language_preference}` : null,
+      result.caregiver_context ? `Caregiver context: ${result.caregiver_context}` : null,
+      "Next: ask caller to accept alternate",
+      "Status: alternate proposed"
+    ].filter(Boolean);
+  }
+  if (result.status === "options_found") {
+    const slots = result.available_slots || [];
+    return [
+      "Care access packet: updating",
+      "Intent: reschedule imaging",
+      "Validation: complete",
+      "Scheduling system: options found",
+      `Requested: ${result.requested_window}`,
+      ...slots.slice(0, 3).map((slot, index) => `Option ${index + 1}: ${slot.window} (${slot.fit})`),
+      result.language_preference ? `Language: ${result.language_preference}` : null,
+      result.caregiver_context ? `Caregiver context: ${result.caregiver_context}` : null,
+      "Next: ask caller to choose a slot",
+      "Status: options offered"
+    ].filter(Boolean);
+  }
+  if (result.status === "needs_clarification") {
+    return [
+      "Care access packet: updating",
+      "Intent: reschedule imaging",
+      "Validation: complete",
+      "Scheduling system: needs requested window",
+      result.next_action || "Next: ask caller for a day or time window",
+      "Status: needs patient"
+    ].filter(Boolean);
+  }
+  return [
+    "Scheduling system: staff review",
+    result.next_action || "Route to staff queue",
+    "Status: staff review"
+  ];
 }
 
 function stopRealtimeSession() {
@@ -554,7 +1291,26 @@ function stopRealtimeSession() {
   state.peerConnection?.close();
   state.localStream?.getTracks().forEach(track => track.stop());
   state.remoteAudio?.pause();
+  state.remoteAudio?.remove();
   state.dataChannel = null;
+  state.handledToolCalls = new Set();
+  state.toolCallArgumentDeltas = new Map();
+  state.toolCallNames = new Map();
+  state.pendingToolTimers.forEach(timer => clearTimeout(timer));
+  state.pendingToolTimers = new Map();
+  state.pendingToolStatuses = new Set();
+  state.schedulingFallbacks = new Set();
+  state.schedulingWindowsHandled = new Set();
+  state.voiceVerified = false;
+  state.callerVerificationProvided = false;
+  state.liveConversationHints = { languagePreference: "", caregiverContext: "" };
+  state.agentTranscriptBuffer = "";
+  state.agentAudioTurnText = "";
+  state.agentAudioSegments = [];
+  state.agentAudioTurnStarted = false;
+  state.callbackDriftCancelled = false;
+  state.lastCallerTranscript = "";
+  state.callerVerificationText = "";
   state.peerConnection = null;
   state.localStream = null;
   state.remoteAudio = null;
@@ -750,7 +1506,7 @@ function renderSitePage() {
       </div>
       <div class="site-info-card">
         <h3>${page.callout}</h3>
-        <p>The assistant uses approved sample data for this demo. Anything outside routine access goes to a teammate.</p>
+        <p>Anything outside routine access goes to a teammate, with the right context carried forward.</p>
       </div>
     </section>
   `;
@@ -899,6 +1655,30 @@ if (els.assistantFab) els.assistantFab.addEventListener("click", () => {
 if (els.assistantPanelClose) els.assistantPanelClose.addEventListener("click", closeAssistantPanel);
 if (els.patientStartBtn) els.patientStartBtn.addEventListener("click", startRealtimeSession);
 if (els.patientStopBtn) els.patientStopBtn.addEventListener("click", stopRealtimeSession);
+
+window.voiceDemoDiagnostics = () => ({
+  connectionState: state.peerConnection?.connectionState || "not-connected",
+  iceConnectionState: state.peerConnection?.iceConnectionState || "not-connected",
+  dataChannelState: state.dataChannel?.readyState || "not-open",
+  remoteAudio: state.remoteAudio ? {
+    paused: state.remoteAudio.paused,
+    muted: state.remoteAudio.muted,
+    volume: state.remoteAudio.volume,
+    readyState: state.remoteAudio.readyState,
+    currentTime: state.remoteAudio.currentTime,
+    hasSrcObject: Boolean(state.remoteAudio.srcObject)
+  } : null,
+  localAudioTracks: state.localStream
+    ? state.localStream.getAudioTracks().map(track => ({
+        enabled: track.enabled,
+        muted: track.muted,
+        readyState: track.readyState,
+        label: track.label
+      }))
+    : [],
+  recentAudio: state.audioPlaybackLog.slice(-30),
+  recentEvents: state.realtimeEventLog.slice(-50)
+});
 
 renderScenario();
 renderScenarioCards();
