@@ -10,7 +10,7 @@ Use a small local web app with vanilla HTML, CSS, JavaScript, and a Python stand
 
 The demo has two execution paths:
 
-- **Realtime voice path**: default mode for the opening wow moment. The browser starts a WebRTC session using a short-lived client secret minted by `server.py`.
+- **Realtime voice path**: default mode for the opening wow moment. The browser starts a GA WebRTC session for `gpt-realtime-2` using a short-lived client secret minted by `server.py`.
 - **Scripted path**: deterministic 90-second sequence for reliable recording, fallback, and executive narration.
 
 ## UI surfaces
@@ -24,28 +24,45 @@ The demo has two execution paths:
 
 The browser rendering functions are event-driven. The scripted demo emits transcript, metric, packet, and scene events. The live path uses Azure OpenAI Realtime/WebRTC and updates the transcript from Realtime events when available.
 
-The current deployment uses the preview/legacy WebRTC protocol for `gpt-realtime-1.5`:
+The primary deployment uses the GA WebRTC protocol for `gpt-realtime-2`:
 
 - `server.py` loads `.env`, validates configuration, and mints short-lived Realtime client secrets.
-- `AZURE_OPENAI_REALTIME_PROTOCOL=legacy-webrtc`
-- `AZURE_OPENAI_REALTIME_REGION=eastus2`
-- `AZURE_OPENAI_REALTIME_API_VERSION=2025-04-01-preview`
-- Browser WebRTC URL: `https://eastus2.realtimeapi-preview.ai.azure.com/v1/realtimertc?model=gpt-realtime-1.5`
+- `AZURE_OPENAI_REALTIME_DEPLOYMENT=gpt-realtime-2`
+- `AZURE_OPENAI_REALTIME_PROTOCOL=ga-webrtc`
+- Client secret endpoint: `/openai/v1/realtime/client_secrets`
+- Browser WebRTC URL: `/openai/v1/realtime/calls`
 
-For GA deployments, the same server supports the `/openai/v1/realtime/client_secrets` and `/openai/v1/realtime/calls` path.
+The legacy WebRTC path remains available only as a fallback for older `gpt-realtime-1.5` deployments.
+
+## Mock scheduling tool seam
+
+Live voice mode exposes a Realtime tool named `confirm_appointment_reschedule`. The model should request this tool in the patient-access workflow after voice-channel validation and a requested appointment window. Automated mock rescheduling is the primary flow; callback tasks are fallback behavior only when the mock scheduling system cannot complete the request or the request needs human judgment.
+
+The browser listens for Realtime function/tool-call events on the data channel, calls a local Python endpoint (`/api/demo-tools/confirm-appointment`), waits briefly to make the tool action visible, and sends the tool result back to the model. The local endpoint is a deterministic stub only; it does not call scheduling, EHR, CRM, or contact-center systems. Caller-facing copy uses realistic "scheduling system" language. The client must handle the GA Realtime function-call item shapes (`response.function_call_arguments.done`, `response.output_item.done`, `conversation.item.added`, `conversation.item.done`, and function calls surfaced in `response.done`) so tool calls do not appear to hang if emitted through a different server event.
+
+Deterministic availability is scenario-based:
+
+- Patient access: normal requested slots return a mock confirmation. A known unavailable requested window returns unavailable plus a nearby alternate slot.
+- Revenue cycle and multilingual access: return unsupported for scheduling confirmation and instruct the model to route to the appropriate staff workflow.
+
+The UI should immediately show that the scheduling system is checking availability, then update the transcript/action packet with the scheduling result. It must not show mock/demo language in the caller-facing transcript.
+
+For the gpt-realtime-2 showcase pass, the scripted patient-access flow intentionally exercises a multi-turn reasoning path, while live voice mode stays intent-driven. Live voice always starts with voice-channel verification, even for signed-in MyHealth users. After verification, a caller can confirm the existing appointment, ask approved access questions, request a reschedule, choose from returned options, or change direction. The action packet should show validation state, current visit or requested slot, options/confirmed slot when applicable, language preference, caregiver context, and staff-safe prep notes.
 
 ## Grounding strategy
 
 Live voice instructions are built server-side from:
 
 - selected scenario prompt and talk track from `scenarios.js`
-- approved run-of-show steps from the selected scenario
+- example run-of-show steps from the selected scenario for tone and demo intent
 - scenario-specific approved demo knowledge from `synthetic-data.js`
 - production-style voice-agent policy in `server.py`
 
 The model should sound like Riley, a warm and experienced patient access teammate at Northlake Health. It must use approved demo facts only, avoid inappropriate PHI collection, avoid clinical advice, and prepare staff-ready action packets or safe human handoffs.
 
-For realism, the agent includes a validation step that asks for caller name and date of birth before preparing an action packet. This must be framed as demo validation, use only approved demo values from the knowledge pack, avoid account/member identifiers, and never repeat a full date of birth back to the caller.
+Riley may use brief, context-aware small talk to make the scenario feel more natural, such as acknowledging that Jordan's mother is driving or that bilingual instructions can help both the patient and caregiver. If the caller requests bilingual support, Riley should answer in English first and Spanish second.
+
+For realism and safety, every live voice interaction begins with validation that asks for caller name and date of birth before appointment-specific details, access answers, tool use, or action-packet preparation. This must be framed as voice-channel verification, use only approved demo values from the knowledge pack, avoid account/member identifiers, and never repeat a full date of birth back to the caller.
 
 The approved demo knowledge pack covers the topics a real access agent typically handles: facility addresses, hours, parking, accessibility, what to bring, arrival guidance, cancellation policy, telehealth availability, Northlake MyHealth portal capabilities, payment options at a high level, records requests, prescription refill routing, test results routing, language services and interpreter availability, callback windows and SLA, and after-hours/emergency guidance. The agent may answer in-bounds questions from this pack and must offer to add anything outside it to the staff handoff.
 
@@ -60,4 +77,6 @@ The agent-facing Realtime prompt, scenario spoken lines, action packet language,
 - Confirm the Realtime status panel shows deployment, voice, protocol, and auth state.
 - Confirm `/api/realtime/status` returns configured metadata.
 - Confirm `/api/realtime/session` mints a short-lived token while masking secrets in any test output.
+- Confirm `/api/demo-tools/confirm-appointment` returns deterministic mock availability without calling external systems.
+- Confirm Realtime tool-call handling can call the local stub and return a tool result to the model.
 - Check console for errors and warnings.

@@ -3,6 +3,11 @@
 !.env.example
 .venv/
 screenshots/
+conversation-script.md
+
+# Local presentation/export artifacts
+*.pptx
+docs/images/deck/
 
 # macOS Finder metadata
 .DS_Store

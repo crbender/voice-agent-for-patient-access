@@ -14,8 +14,8 @@ window.SYNTHETIC_KNOWLEDGE = {
       ]
     },
     guardrails: [
-      "Use only the approved demo people, clinics, appointments, benefits, balances, callback windows, hours, parking, accessibility, telehealth, payment, and policy facts in this knowledge pack.",
-      "For demo validation, ask for caller name and date of birth; do not ask for member IDs, account numbers, or appointment confirmation numbers.",
+      "Use only the approved people, clinics, appointments, benefits, balances, callback windows, hours, parking, accessibility, telehealth, payment, and policy facts in this knowledge pack.",
+      "For voice-channel validation, ask for caller name and date of birth; do not ask for member IDs, account numbers, or appointment confirmation numbers.",
       "Never repeat a full date of birth back to the caller; say validation is complete or use masked language.",
       "Never request or repeat real addresses, member IDs, account numbers, or real appointment details.",
       "Clinical symptoms, medication questions, urgent concerns, identity mismatches, billing disputes, financial hardship, and complex language support route to staff.",
@@ -25,7 +25,7 @@ window.SYNTHETIC_KNOWLEDGE = {
       "Use the phrase 'action packet' when summarizing what staff receive."
     ],
     validationProtocol: {
-      prompt: "For validation, may I have your full name and date of birth?",
+      prompt: "For validation, can you confirm your name and date of birth?",
       acceptedDemoValues: [
         { name: "Jordan Lee", dateOfBirth: "July 14, 1982", masked: "July 14 ending 1982" },
         { name: "Maya Patel", dateOfBirth: "March 8, 1979", masked: "March 8 ending 1979" },
@@ -36,7 +36,7 @@ window.SYNTHETIC_KNOWLEDGE = {
         { name: "Nora Ahmed", dateOfBirth: "December 12, 1992", masked: "December 12 ending 1992" }
       ],
       successPhrase: "Validation is complete. I can prepare the action packet.",
-      failureRoute: "If the caller will not provide the demo validation values, route to staff queue with handoff state: validation incomplete."
+      failureRoute: "If the caller will not provide the validation values, route to staff queue with handoff state: validation incomplete."
     },
     facilities: [
       {
@@ -102,7 +102,7 @@ window.SYNTHETIC_KNOWLEDGE = {
     },
     paymentOptions: {
       accepted: ["Online portal payment", "Phone payment with billing staff", "Mailed check", "Payment plan request routed to billing"],
-      note: "I cannot quote or take a payment in this demo, but I can prepare a billing review packet so a staff member follows up."
+      note: "I cannot quote or take a payment here, but I can prepare a billing review packet so a staff member follows up."
     },
     recordsRequests: "Medical records requests are routed to the Health Information Management team. I can capture the request type and preferred contact method in the action packet.",
     prescriptionRefills: "Prescription refills are handled by the prescribing clinic, not by patient access. I can route the refill request to the clinic with the medication name and pharmacy preference.",
@@ -190,10 +190,11 @@ window.SYNTHETIC_KNOWLEDGE = {
         startingUtterance: "I need to reschedule my imaging appointment tomorrow morning.",
         approvedFacts: [
           "Demo validation uses name Jordan Lee and date of birth July 14, 1982.",
-          "The request can be captured as a scheduling callback task.",
-          "The agent can record preferred callback windows, visit type, and facility preference.",
+          "The scheduling system can confirm available slots after voice-channel validation.",
+          "If a requested slot is unavailable, the scheduling system returns a nearby alternate time.",
+          "The action packet may capture that Jordan's mother is driving and prefers Spanish when the caller mentions it.",
           "The approved imaging address is Northlake Imaging Center, 1200 Lakeside Medical Parkway, Suite 210, Northlake, WA 98052.",
-          "The agent cannot confirm or change a real appointment in this public demo."
+          "Production appointment changes require the connected scheduling workflow."
         ]
       },
       {
@@ -223,7 +224,7 @@ window.SYNTHETIC_KNOWLEDGE = {
       }
     ],
     approvedFaq: [
-      { topic: "rescheduling", answer: "I can prepare a scheduling callback request with the visit type, preferred callback window, and facility preference." },
+      { topic: "rescheduling", answer: "I can check the scheduling system and confirm an available slot. If the requested window is not open, I can offer a nearby time." },
       { topic: "cancellation policy", answer: "Appointments can be rescheduled up to 24 hours before the visit without a fee. Inside 24 hours, the team handles it case by case." },
       { topic: "imaging prep", answer: "I can share approved preparation instructions, but procedure-specific clinical questions route to staff." },
       { topic: "what to bring", answer: "Plan to bring a photo ID and your insurance card if you have it, plus any prior imaging the office requested." },
@@ -236,8 +237,8 @@ window.SYNTHETIC_KNOWLEDGE = {
     ],
     actionPacketTemplate: [
       "Intent: reschedule imaging or prep question",
-      "Next best action: create scheduling callback task",
-      "Context: preferred window, facility preference, approved FAQ topic, accessibility notes",
+      "Next best action: automated scheduling check before callback fallback",
+      "Context: requested window, alternate slot if needed, confirmed slot, caregiver context, language preference, approved FAQ topic, accessibility notes",
       "Handoff state: routine unless clinical or identity exception"
     ]
   },
@@ -295,7 +296,7 @@ window.SYNTHETIC_KNOWLEDGE = {
           "Demo validation uses name Elena Garcia and date of birth September 9, 1984.",
           "The agent can acknowledge language preference and prepare a staff summary.",
           "Clinical translation or urgent concerns route to approved language services or staff.",
-          "The demo can show multilingual routing without claiming certified interpretation."
+          "The experience can show multilingual routing without claiming certified interpretation."
         ]
       },
       {
@@ -327,4 +328,3 @@ window.SYNTHETIC_KNOWLEDGE = {
     ]
   }
 };
-
