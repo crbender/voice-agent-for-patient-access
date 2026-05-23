@@ -26,13 +26,15 @@ Keep Azure OpenAI credentials in a local `.env` file only. `.env` and `.env.*` a
 
 Before publishing, sharing, or archiving this project, confirm that `.env` is not included. If a real API key is ever committed, shared, pasted into an issue, or included in an archive, rotate that key immediately in Azure.
 
+If your environment requires Microsoft Entra ID instead of API keys, follow [docs/entra-identity-auth.md](docs/entra-identity-auth.md) and disable local auth after identity-based auth is validated.
+
 ## Production Security Gaps
 
 This demo is not production-hardened. Before adapting the pattern for a patient-facing MVP, add at minimum:
 
 - server-managed WebRTC session lifecycle, tool authorization, and session state
 - strict CORS, CSP, origin checks, and rate limits
-- managed secrets, not local `.env` files
+- managed secrets or Microsoft Entra ID, not local `.env` files
 - PHI screening/minimization before prompts, logs, transcripts, analytics, or handoffs
 - retention, encryption, and access controls for audio, transcripts, action packets, and audit logs
 - cache controls that prevent patient-specific data from being stored in browser, CDN, or shared proxy caches

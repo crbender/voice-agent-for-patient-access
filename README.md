@@ -103,6 +103,8 @@ For the most consistent walkthrough, start in scripted mode and use the patient 
 
 ## Optional Live Voice Setup
 
+If your environment requires Microsoft Entra ID (identity-based auth) instead of keys, use this guide first: [docs/entra-identity-auth.md](docs/entra-identity-auth.md).
+
 1. Create local environment file:
 
 ```bash
@@ -164,6 +166,7 @@ Automated mock rescheduling is the primary demo flow. Callback tasks are fallbac
 ## Repository Docs
 
 - [docs/architecture.md](docs/architecture.md): high-level system architecture and trust boundary overview
+- [docs/entra-identity-auth.md](docs/entra-identity-auth.md): move this demo from API key auth to Microsoft Entra ID (managed identity / RBAC) auth
 - [docs/path-to-mvp.md](docs/path-to-mvp.md): forward-looking FAQ on what it would take to evolve this demo into a real MVP
 - [CONTRIBUTING.md](CONTRIBUTING.md): contribution guidelines
 - [SECURITY.md](SECURITY.md): security reporting guidance
@@ -175,6 +178,7 @@ Automated mock rescheduling is the primary demo flow. Callback tasks are fallbac
 - Use approved demo data only for demo sessions
 - Do not send PHI or production credentials through this scaffold
 - Keep API keys in `.env` (server-side only)
+- If your org requires identity-based auth, follow [docs/entra-identity-auth.md](docs/entra-identity-auth.md) and disable local auth after cutover
 
 ## Disclaimer
 
