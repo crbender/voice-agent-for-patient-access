@@ -33,10 +33,10 @@ Microsoft Learn:
 
 ### 2. Assign the right RBAC role
 
-At minimum, assign the calling identity one of these roles on the Azure OpenAI resource scope:
+Assign the calling identity at the narrowest practical scope, ideally the specific Azure OpenAI resource:
 
-- `Cognitive Services OpenAI User` (inference)
-- `Cognitive Services OpenAI Contributor` (broader operational scope)
+- `Cognitive Services OpenAI User` for runtime inference. This is the preferred default for the demo server.
+- `Cognitive Services OpenAI Contributor` only when the same identity also needs broader operational actions, such as managing deployments.
 
 Microsoft Learn:
 
@@ -89,7 +89,7 @@ from azure.identity import DefaultAzureCredential
 _credential = DefaultAzureCredential()
 
 def _entra_auth_header():
-    token = _credential.get_token("https://cognitiveservices.azure.com/.default")
+    token = _credential.get_token("https://ai.azure.com/.default")
     return {"Authorization": f"Bearer {token.token}"}
 ```
 
@@ -99,7 +99,7 @@ Then use that header when `server.py` calls:
 
 Do **not** move the long-lived Entra token into the browser. The browser should continue to receive only the short-lived Realtime client secret returned by the server, then use that short-lived token for the `/openai/v1/realtime/calls` SDP exchange.
 
-This repo calls the Azure OpenAI REST endpoint directly, so the expected token audience is `https://cognitiveservices.azure.com/.default`. If you are using a different API surface or Azure cloud, confirm the token audience against the Microsoft Learn page for that API before rollout.
+This repo uses the Azure OpenAI `/openai/v1` Realtime path, and current Microsoft Learn v1 examples use `https://ai.azure.com/.default` for Entra token providers. If you are using an older API surface, Azure CLI token commands, or a sovereign cloud, confirm the token audience against the Microsoft Learn page for that API before rollout.
 
 ### 5. Lock down key auth after cutover
 
