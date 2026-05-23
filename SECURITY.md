@@ -26,7 +26,7 @@ Keep Azure OpenAI credentials in a local `.env` file only. `.env` and `.env.*` a
 
 Before publishing, sharing, or archiving this project, confirm that `.env` is not included. If a real API key is ever committed, shared, pasted into an issue, or included in an archive, rotate that key immediately in Azure.
 
-If your environment requires Microsoft Entra ID instead of API keys, follow [docs/entra-identity-auth.md](docs/entra-identity-auth.md) and disable local auth after identity-based auth is validated.
+If your environment requires Microsoft Entra ID instead of API keys, follow [docs/entra-identity-auth.md](docs/entra-identity-auth.md) and disable local authentication (API key auth) on the Azure AI/OpenAI resource after identity-based auth is validated.
 
 ## Production Security Gaps
 
