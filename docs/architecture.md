@@ -31,8 +31,11 @@ flowchart LR
 
 - The browser never receives the long-lived Azure API key
 - The local server holds environment configuration and mints short-lived session credentials
+- The static host serves an explicit asset allowlist; local configuration, repository metadata, server source, tests, and directory listings are not public routes
+- Browser POST requests are restricted to the configured local origin, with request-size and JSON validation at the server boundary
 - Approved demo data is used to simulate workflows and validation prompts
-- The mock scheduling tool is local-only and does not update live scheduling, EHR, CRM, billing, or contact-center systems
+- Realtime grounding is scoped to the active synthetic profile and scenario before it crosses the browser/server boundary
+- The mock scheduling tool accepts only canonical server-owned slots and context; it is local-only and does not update live scheduling, EHR, CRM, billing, or contact-center systems
 - Human handoff remains explicit for exceptions and non-routine needs
 
 ## Runtime Components
@@ -43,13 +46,16 @@ flowchart LR
 - executive operations console
 - scripted playback UI
 - optional microphone/WebRTC session
+- deterministic active-profile verification and canonical scheduling-text inference
+- modal focus management, transcript bounds, and synchronized scenario state
 
 ### Local Server
 
-- serves static assets
+- serves only allowlisted static assets with CSP, MIME, cache, and browser-security headers
 - exposes realtime status endpoint
 - creates short-lived realtime session credentials
-- exposes `/api/demo-tools/confirm-appointment` for deterministic mock scheduling availability
+- validates complete, bounded scenario grounding without truncating trailing fields
+- exposes `/api/demo-tools/confirm-appointment` for deterministic mock scheduling availability using server-owned synthetic patient, facility, visit, and slot records
 - can generate an ignored conversation script artifact for demo alignment when `GENERATE_CONVERSATION_SCRIPT=1`
 
 ### Azure Realtime Layer
@@ -73,7 +79,7 @@ The primary live path uses `gpt-realtime-2` with GA WebRTC. Legacy WebRTC remain
 
 ### Mock Scheduling Tool
 
-The patient-access scenario exposes `confirm_appointment_reschedule` as a Realtime tool. The browser receives the model's function call over the Realtime data channel, calls the local Python stub, then returns the tool output to the model as `function_call_output` using the same tool-call ID. The stub waits briefly so the demo visibly feels like an external scheduling lookup, then deterministically returns ranked available slots for broad requests or a mock confirmation for an exact selected slot.
+The patient-access scenario exposes `confirm_appointment_reschedule` as a Realtime tool. The browser receives the model's function call over the Realtime data channel, calls the local Python stub, then returns the tool output to the model as `function_call_output` using the same tool-call ID. The stub waits briefly so the demo visibly feels like an external scheduling lookup, then deterministically returns ranked canonical slots for broad requests or a mock confirmation for an exact slot/ID match. Negated, contradictory, ambiguous, or mismatched requests return clarification rather than a success-shaped result.
 
 The live path uses Azure OpenAI GA WebRTC endpoints: `/openai/v1/realtime/client_secrets` for short-lived session credentials and `/openai/v1/realtime/calls` for the browser SDP exchange. The demo intentionally does not enable `webrtcfilter=on` because the browser owns the local tool bridge and needs the full Realtime data-channel event stream for function-call handling. A production architecture should not stop at token minting: the server-side session service should manage WebRTC session lifecycle, tool authorization, PHI screening, session state, transcript retention, cache boundaries, and audit events. A production architecture that must hide prompt/session details from the browser should move the tool bridge to a server-side observer/controller.
 

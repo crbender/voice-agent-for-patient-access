@@ -20,6 +20,13 @@ As an executive demo producer, I want a 90-second browser demo that makes an AI 
 - The patient-access showcase should demonstrate gpt-realtime-2 strengths with interruption handling, bilingual adaptation, stress-aware acknowledgement, a two-step scheduling-system tool flow, and a structured care access packet.
 - The Realtime model instructions must sound like a production hospital contact-center agent, not a generic AI assistant or loose demo narrator.
 - The public repository must include guardrails that prevent accidental publication of local `.env` files.
+- The local server must serve only an explicit allowlist of browser assets and must deny `.env*`, dotfiles, repository metadata, server source, tests, and directory listings for both GET and HEAD requests.
+- Demo verification must require both the name and date of birth associated with the currently signed-in profile. Another demo persona, a single factor, or assistant wording must not mark the session verified.
+- Scheduling confirmation must use server-owned patient, facility, and visit context plus canonical allowlisted slots. Negated, contradictory, ambiguous, or mismatched time requests must never produce a confirmation.
+- Realtime grounding must include the complete active-scenario knowledge payload without arbitrary character truncation. Oversized or malformed payloads must fail explicitly.
+- Patient and executive scenario selectors must update one shared scenario state so the visible page, profile, portal preview, transcript, and action packet cannot drift apart.
+- The assistant panel must behave as an accessible modal: hidden controls are not tabbable, focus is trapped and restored, background surfaces are inert, Escape and the backdrop close it, and reduced-motion preferences disable nonessential animation.
+- Python standard-library tests and Node built-in tests must cover the local server boundary, scheduling rules, verification rules, grounding completeness, and critical browser-domain helpers. CI must run those tests and syntax checks.
 
 ## Primary personas
 
@@ -65,6 +72,7 @@ As an executive demo producer, I want a 90-second browser demo that makes an AI 
 - If the caller asks for bilingual output, the model should answer in English first and Spanish second while keeping each language concise.
 - The model must not imply that live scheduling, billing, EHR, CRM, or contact-center systems were modified if directly challenged, but normal caller-facing conversation should simply refer to the "scheduling system" and avoid implementation labels.
 - The agent-facing Realtime instructions, scenario lines, and knowledge values must not use the word "synthetic"; the presenter will handle the public demo disclaimer separately.
+- The server-owned role, safety boundary, and scenario key mapping are authoritative. Browser-provided knowledge and example turns are bounded demo data and must not replace the base policy.
 
 ## Acceptance criteria
 
@@ -81,3 +89,18 @@ As an executive demo producer, I want a 90-second browser demo that makes an AI 
 - Azure integration points are visible, and the scripted path remains usable if live voice is unavailable.
 - A GitHub Actions workflow fails pull requests if a tracked `.env` or `.env.*` file is present, except the approved `.env.example` template.
 - README quick start warns maintainers to verify `.env` does not exist before sharing the folder.
+- GET and HEAD requests for `/.env`, `/.git`, `/server.py`, `/tests/`, and other unlisted paths return 404 while allowlisted JavaScript and CSS use correct MIME types.
+- API responses containing session metadata or short-lived client secrets use `Cache-Control: no-store`.
+- Name-only, date-of-birth-only, and wrong-persona verification attempts remain unverified.
+- Requests such as "Thursday at 11:30" and "anything except Friday at 11:30" do not confirm Friday at 11:30.
+- Caller/model-supplied patient names, facilities, and visit types cannot replace the server-owned scheduling context.
+- The active access FAQ and final grounding fields are present in the Realtime instructions.
+- Switching scenarios from either view updates every patient and executive surface consistently.
+- The closed assistant panel is inert and excluded from keyboard navigation.
+- CI runs Python and JavaScript tests without requiring Playwright or an Azure credential.
+
+## Source anchors
+
+- [Azure Voice Live API](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/voice-live-how-to)
+- [Azure OpenAI GPT Realtime API via WebRTC](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/realtime-audio-webrtc)
+- [OpenAI: Advancing voice intelligence with new models in the API, May 7, 2026](https://openai.com/index/advancing-voice-intelligence-with-new-models-in-the-api/)

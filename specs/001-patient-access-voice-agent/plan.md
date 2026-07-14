@@ -80,3 +80,40 @@ The agent-facing Realtime prompt, scenario spoken lines, action packet language,
 - Confirm `/api/demo-tools/confirm-appointment` returns deterministic mock availability without calling external systems.
 - Confirm Realtime tool-call handling can call the local stub and return a tool result to the model.
 - Check console for errors and warnings.
+
+## Publish-readiness remediation
+
+Keep the runtime lightweight and demo-oriented while enforcing the boundaries the
+experience claims on screen:
+
+- Serve only `index.html`, CSS, browser JavaScript, and other explicitly approved
+  public assets. Apply the same allowlist to GET and HEAD.
+- Emit correct MIME types plus a CSP that permits same-origin assets, the data
+  favicon, microphone access, and HTTPS Azure Realtime SDP calls.
+- Require bounded JSON requests and same-origin browser POSTs from either
+  `127.0.0.1` or `localhost` on the configured port.
+- Treat the server's role/safety prompt and scenario-key mapping as
+  authoritative. Treat browser knowledge and example turns as bounded,
+  delimited demo data.
+- Scope verification to the active signed-in profile and require both name and
+  date of birth before enabling scheduling.
+- Resolve scheduling with canonical server-owned slots and context. Natural
+  language may find options, but only an allowlisted exact slot or slot ID can
+  be confirmed.
+- Compact and validate the complete active-scenario grounding payload; never
+  slice serialized JSON.
+- Use one scenario-selection path for both patient and executive controls.
+- Make the assistant panel an accessible modal and honor reduced motion.
+- Keep DOM-free domain logic importable by Node so the core behavior can be
+  tested without adding a browser dependency to CI.
+
+## Regression strategy
+
+- Python `unittest` covers the static allowlist, response headers, request
+  validation, scheduling resolution, authoritative context, scenario
+  validation, and grounding completeness.
+- Node's built-in test runner covers active-profile verification and safe
+  scheduling-window inference.
+- CI runs both suites plus Python and JavaScript syntax checks.
+- The optional Playwright screenshot utility remains a visual smoke path, but
+  its dependency is not required for core CI.

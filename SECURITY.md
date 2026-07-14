@@ -22,7 +22,7 @@ This repository is a sample application for demonstration purposes. Security fix
 
 ## Local Secrets
 
-Keep Azure OpenAI credentials in a local `.env` file only. `.env` and `.env.*` are ignored by git, and the GitHub Actions workflow blocks tracked environment files other than `.env.example`.
+Keep Azure OpenAI credentials in a local `.env` file only. `.env` and `.env.*` are ignored by git, and the GitHub Actions workflow blocks tracked environment files other than `.env.example`. The local server uses an explicit static-asset allowlist, so `.env`, repository metadata, server source, and other unlisted paths are not served over HTTP.
 
 Before publishing, sharing, or archiving this project, confirm that `.env` is not included. If a real API key is ever committed, shared, pasted into an issue, or included in an archive, rotate that key immediately in Azure.
 
@@ -32,8 +32,8 @@ If your environment requires Microsoft Entra ID instead of API keys, follow [doc
 
 This demo is not production-hardened. Before adapting the pattern for a patient-facing MVP, add at minimum:
 
-- server-managed WebRTC session lifecycle, tool authorization, and session state
-- strict CORS, CSP, origin checks, and rate limits
+- server-managed WebRTC session lifecycle, user authentication, tool authorization, and session state
+- an authenticated deployment gateway, production-grade origin policy, abuse protection, and rate limits
 - managed secrets or Microsoft Entra ID, not local `.env` files
 - PHI screening/minimization before prompts, logs, transcripts, analytics, or handoffs
 - retention, encryption, and access controls for audio, transcripts, action packets, and audit logs

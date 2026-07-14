@@ -1,0 +1,48 @@
+name: Test demo
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check Python syntax
+        run: python -m py_compile server.py scripts/capture_ui_screenshots.py
+
+      - name: Run Python tests
+        run: python -m unittest discover -s tests -p "test_*.py"
+
+      - name: Check JavaScript syntax
+        run: |
+          node --check app.js
+          node --check demo-domain.js
+          node --check generate_script.js
+          node --check scenarios.js
+          node --check synthetic-data.js
+          node --check theme.js
+
+      - name: Run JavaScript tests
+        run: node --test tests/test_demo_domain.js
+
+      - name: Smoke test transcript generation
+        run: |
+          node generate_script.js
+          test -s conversation-script.md
+          grep -q "## Scenario: Patient access" conversation-script.md

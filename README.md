@@ -44,6 +44,7 @@ At a high level, the demo separates the browser experience from the credentialed
 - scenario grounding and approved demo context shape the response behavior
 - Realtime tool calls can bridge to a local mock scheduling endpoint for the patient-access scenario
 - the UI surfaces action packets, trust cues, and human handoff state
+- the local server exposes only an explicit browser-asset allowlist and keeps repository files private
 
 For a deeper walkthrough, see [docs/architecture.md](docs/architecture.md).
 
@@ -100,6 +101,8 @@ python3 server.py
 Open http://127.0.0.1:8787 and run the scripted demo.
 
 For the most consistent walkthrough, start in scripted mode and use the patient access scenario first.
+The local host serves only the browser assets needed by the demo; `.env`, `.git`,
+server source, tests, and other repository paths return `404`.
 
 ## Optional Live Voice Setup
 
@@ -130,7 +133,9 @@ GENERATE_CONVERSATION_SCRIPT=0
 
 3. Restart server and refresh browser.
 
-The right panel should show Realtime voice configured.
+The right panel should show Realtime voice configured. This indicates that the
+required local settings are present; it does not claim that Azure connectivity
+has been proven until a live session starts.
 
 The primary live voice path now targets `gpt-realtime-2` with GA WebRTC. The older `legacy-webrtc` path remains in the code only as a fallback for previous `gpt-realtime-1.5` deployments.
 
@@ -140,12 +145,13 @@ Realtime diagnostics are available from the browser console with `voiceDemoDiagn
 
 ### Mock Scheduling Tool
 
-In the patient-access scenario, live voice mode is intentionally intent-driven rather than script-locked. Riley first verifies the caller by name and date of birth, even when the user is signed in to MyHealth. After verification, callers can confirm they will attend, ask routine access questions, request a reschedule, choose from offered options, or change direction mid-call. Riley uses the approved demo data as factual grounding, uses the run-of-show as examples for tone, and is prompted to end each turn with a clear next step or bounded question.
+In the patient-access scenario, live voice mode is intentionally intent-driven rather than script-locked. Riley first verifies the active synthetic caller by both name and date of birth, even when the user is signed in to MyHealth. Name-only, date-only, and another demo persona do not verify the active profile. After verification, callers can confirm they will attend, ask routine access questions, request a reschedule, choose from offered options, or change direction mid-call. Riley uses the approved demo data as factual grounding, uses the run-of-show as examples for tone, and is prompted to end each turn with a clear next step or bounded question.
 
 For rescheduling, live voice mode exposes a local Realtime tool named `confirm_appointment_reschedule`. When Riley has validated the caller and captured a requested appointment window, the model can request that tool. The browser bridges the model tool call to `/api/demo-tools/confirm-appointment`, which returns deterministic mock availability, then sends the result back to Realtime as `function_call_output` for the same tool-call ID.
 
 - Broad patient-access windows such as "Thursday" or "Friday morning" return ranked available slots so Riley can work through choices naturally before booking.
-- Exact selected slots such as "Thursday at 2:15 PM" or "Friday at 11:30 AM" return a mock confirmation number.
+- Exact selected slots such as "Thursday at 2:15 PM" or "Friday at 11:30 AM" return a mock confirmation number only when the request matches a canonical server-owned slot. Negated, contradictory, and mismatched requests do not confirm.
+- Patient, facility, and visit context is server-owned synthetic data; values supplied by the browser or model cannot redefine the appointment.
 - Revenue-cycle and multilingual scenarios return an unsupported scheduling result and route to staff.
 
 The tool is a local stub only. It does not call scheduling, EHR, CRM, billing, or contact-center systems.
@@ -157,11 +163,13 @@ Automated mock rescheduling is the primary demo flow. Callback tasks are fallbac
 - `index.html`: UI shell for patient and executive views
 - `styles.css`: complete visual system and responsive behavior
 - `app.js`: runtime orchestration, demo logic, and realtime controls
+- `demo-domain.js`: DOM-free verification and scheduling-text helpers
 - `scenarios.js`: scripted scenario content and talk tracks
 - `synthetic-data.js`: approved demo grounding data
 - `server.py`: local static host plus realtime token endpoints
 - `generate_script.js`: optional generator for the ignored `conversation-script.md` validation transcript
 - `scripts/capture_ui_screenshots.py`: automated screenshot capture utility
+- `tests/`: Python server and Node domain regression tests
 
 ## Repository Docs
 
@@ -188,6 +196,14 @@ Any references to Microsoft products (Azure, Copilot, etc.) are for demonstratio
 
 ## Screenshot Automation
 
+Install the optional visual-test dependency once:
+
+```bash
+python3 -m venv .venv
+./.venv/bin/pip install playwright
+./.venv/bin/playwright install chromium
+```
+
 Generate a fresh screenshot pack:
 
 ```bash
@@ -195,6 +211,28 @@ Generate a fresh screenshot pack:
 ```
 
 Output is saved to a timestamped folder under `screenshots/`.
+
+## Validation
+
+Run the dependency-free regression and syntax checks:
+
+```bash
+python3 -m py_compile server.py scripts/capture_ui_screenshots.py
+python3 -m unittest discover -s tests -p "test_*.py"
+node --check app.js
+node --check demo-domain.js
+node --check generate_script.js
+node --check scenarios.js
+node --check synthetic-data.js
+node --check theme.js
+node --test tests/test_demo_domain.js
+node generate_script.js
+```
+
+The screenshot command above is optional and requires Playwright plus Chromium.
+CI runs the DOM-independent Python and Node checks on every pull request.
+`conversation-script.md` is ignored; remove it after validation if you do not
+need the local artifact.
 
 ## From Demo to MVP
 
