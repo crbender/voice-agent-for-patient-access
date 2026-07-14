@@ -17,6 +17,9 @@ const state = {
   schedulingWindowsHandled: new Set(),
   voiceVerified: false,
   callerVerificationProvided: false,
+  demoSessionId: "",
+  schedulingCapability: "",
+  verificationPromise: null,
   liveConversationHints: {
     languagePreference: "",
     caregiverContext: ""
@@ -581,6 +584,12 @@ async function startRealtimeSession() {
       const azureMessage = sessionData.error?.message || sessionData.error || "Realtime session request failed.";
       throw new Error(sessionData.guidance ? `${azureMessage} ${sessionData.guidance}` : azureMessage);
     }
+    if (!sessionData.demoSessionId) {
+      throw new Error("Realtime session did not include demo authorization state.");
+    }
+    state.demoSessionId = sessionData.demoSessionId;
+    state.schedulingCapability = "";
+    state.voiceVerified = false;
 
     const peerConnection = new RTCPeerConnection();
     const remoteAudio = document.createElement("audio");
@@ -768,6 +777,7 @@ function handleRealtimeEvent(rawMessage) {
     state.lastCallerTranscript = event.transcript;
     addMessage({ who: "Caller", type: "patient", text: event.transcript });
     updateVoiceVerificationFromCallerText(event.transcript);
+    syncServerVerification(event.transcript);
     updateLiveConversationHints(event.transcript);
   }
   if (event.type === "response.output_audio_transcript.done" && event.transcript) {
@@ -937,17 +947,19 @@ async function handleSchedulingToolCall(callId, rawArguments) {
     requested_window: args.requested_window || args.requestedWindow || args.preferred_window || "",
     selected_slot_id: args.selected_slot_id || args.selectedSlotId || "",
     language_preference: args.language_preference || args.languagePreference || "",
-    caregiver_context: args.caregiver_context || args.caregiverContext || ""
+    caregiver_context: args.caregiver_context || args.caregiverContext || "",
+    demo_session_id: state.demoSessionId,
+    scheduling_capability: state.schedulingCapability
   };
 
-  if (!state.voiceVerified && callerProvidedActiveVerification()) {
-    state.voiceVerified = true;
-  }
+  await waitForServerVerification();
+  payload.demo_session_id = state.demoSessionId;
+  payload.scheduling_capability = state.schedulingCapability;
 
-  if (state.scenarioKey === "access" && !state.voiceVerified) {
+  if (state.scenarioKey === "access" && !hasSchedulingAuthorization()) {
     const result = {
       status: "validation_required",
-      message: "Voice-channel verification is required before scheduling.",
+      message: "Server-verified voice-channel verification is required before scheduling.",
       next_action: "Ask for caller name and date of birth before checking appointment availability."
     };
     sendSchedulingFunctionOutputToRealtime(callId, result, "Ask for caller name and date of birth, then continue the scheduling workflow. Do not ask for a callback.");
@@ -989,7 +1001,13 @@ async function handleSchedulingToolCall(callId, rawArguments) {
     }, 8000);
     const result = await response.json();
     result.client_elapsed_ms = Math.round(performance.now() - startedAt);
-    if (!response.ok) throw new Error(result.error || "Scheduling tool failed.");
+    if (result.status === "validation_required") {
+      state.voiceVerified = false;
+      state.schedulingCapability = "";
+    }
+    if (!response.ok && result.status !== "validation_required") {
+      throw new Error(result.error || "Scheduling tool failed.");
+    }
 
     const resultText = formatSchedulingResult(result);
     addMessage({ who: "Scheduling system", type: "system", text: resultText });
@@ -1028,16 +1046,78 @@ function updateVoiceVerificationFromCallerText(text) {
   );
   if (matchesActiveProfile) {
     state.callerVerificationProvided = true;
-    state.voiceVerified = true;
   }
 }
 
-function callerProvidedActiveVerification() {
-  const acceptedValues = window.SYNTHETIC_KNOWLEDGE?.shared?.validationProtocol?.acceptedDemoValues || [];
-  return DOMAIN.matchesActiveVerification(
-    state.callerVerificationText,
-    signedInProfileForCurrentScenario(),
-    acceptedValues
+function syncServerVerification(text) {
+  if (
+    state.scenarioKey !== "access" ||
+    !state.demoSessionId ||
+    state.schedulingCapability
+  ) {
+    return Promise.resolve(null);
+  }
+
+  const demoSessionId = state.demoSessionId;
+  const previous = state.verificationPromise || Promise.resolve();
+  const operation = previous
+    .catch(() => null)
+    .then(async () => {
+      if (state.demoSessionId !== demoSessionId) return null;
+      try {
+        const response = await fetchWithTimeout(
+          "/api/demo-tools/verify-session",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              demo_session_id: demoSessionId,
+              verification_text: text
+            })
+          },
+          5000
+        );
+        const result = await response.json();
+        if (state.demoSessionId !== demoSessionId) return result;
+        if (
+          response.ok &&
+          result.status === "verified" &&
+          result.scheduling_capability
+        ) {
+          state.schedulingCapability = result.scheduling_capability;
+          state.voiceVerified = true;
+          state.callerVerificationProvided = true;
+        } else if (result.status === "validation_required") {
+          state.schedulingCapability = "";
+          state.voiceVerified = false;
+        }
+        return result;
+      } catch (error) {
+        if (DEBUG_REALTIME) console.error("[server-verification]", error);
+        return null;
+      }
+    });
+
+  state.verificationPromise = operation;
+  operation.finally(() => {
+    if (state.verificationPromise === operation) {
+      state.verificationPromise = null;
+    }
+  });
+  return operation;
+}
+
+async function waitForServerVerification() {
+  if (state.verificationPromise) {
+    await state.verificationPromise;
+  }
+}
+
+function hasSchedulingAuthorization() {
+  return Boolean(
+    state.voiceVerified &&
+    state.demoSessionId &&
+    state.schedulingCapability
   );
 }
 
@@ -1056,11 +1136,9 @@ function inferSchedulingWindowFromText(text) {
 }
 
 async function runClientSchedulingFallback(requestedWindow, stage, callId = null) {
-  if (!state.voiceVerified && callerProvidedActiveVerification()) {
-    state.voiceVerified = true;
-  }
+  await waitForServerVerification();
 
-  if (state.scenarioKey === "access" && !state.voiceVerified) {
+  if (state.scenarioKey === "access" && !hasSchedulingAuthorization()) {
     if (callId) {
       sendSchedulingFunctionOutputToRealtime(
         callId,
@@ -1086,7 +1164,9 @@ async function runClientSchedulingFallback(requestedWindow, stage, callId = null
     scenario_key: state.scenarioKey,
     requested_window: requestedWindow,
     language_preference: state.liveConversationHints.languagePreference,
-    caregiver_context: state.liveConversationHints.caregiverContext
+    caregiver_context: state.liveConversationHints.caregiverContext,
+    demo_session_id: state.demoSessionId,
+    scheduling_capability: state.schedulingCapability
   };
 
   addMessage({
@@ -1109,7 +1189,13 @@ async function runClientSchedulingFallback(requestedWindow, stage, callId = null
     }, 8000);
     const result = await response.json();
     result.client_elapsed_ms = Math.round(performance.now() - startedAt);
-    if (!response.ok) throw new Error(result.error || "Scheduling tool failed.");
+    if (result.status === "validation_required") {
+      state.voiceVerified = false;
+      state.schedulingCapability = "";
+    }
+    if (!response.ok && result.status !== "validation_required") {
+      throw new Error(result.error || "Scheduling tool failed.");
+    }
 
     const resultText = formatSchedulingResult(result);
     addMessage({ who: "Scheduling system", type: "system", text: resultText });
@@ -1140,6 +1226,9 @@ async function runClientSchedulingFallback(requestedWindow, stage, callId = null
 }
 
 function schedulingFollowupInstructions(result) {
+  if (result.status === "validation_required") {
+    return "Ask for caller name and date of birth, then continue the scheduling workflow. Do not imply that availability was checked.";
+  }
   if (result.status === "options_found") {
     return "Continue the call naturally. Offer the available scheduling options in plain language and ask which works. When the caller chooses, call the scheduling tool again with that option's exact window and slot_id. Do not say anything is booked yet.";
   }
@@ -1307,6 +1396,9 @@ function stopRealtimeSession() {
   state.schedulingWindowsHandled = new Set();
   state.voiceVerified = false;
   state.callerVerificationProvided = false;
+  state.demoSessionId = "";
+  state.schedulingCapability = "";
+  state.verificationPromise = null;
   state.liveConversationHints = { languagePreference: "", caregiverContext: "" };
   state.agentTranscriptBuffer = "";
   state.agentAudioTurnText = "";

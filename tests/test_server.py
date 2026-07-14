@@ -1,6 +1,7 @@
 import json
 import os
 import threading
+import time
 import unittest
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
@@ -213,6 +214,9 @@ class DemoHttpServerTests(unittest.TestCase):
         cls.httpd.server_close()
         cls.thread.join(timeout=5)
 
+    def setUp(self):
+        server._reset_demo_session_state()
+
     def request(self, path, method="GET", data=None, headers=None):
         request = Request(
             self.base_url + path,
@@ -227,6 +231,55 @@ class DemoHttpServerTests(unittest.TestCase):
             result = error.code, error.headers, error.read()
             error.close()
             return result
+
+    def post_json(self, path, payload):
+        status, headers, body = self.request(
+            path,
+            method="POST",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        return status, headers, json.loads(body)
+
+    def create_live_demo_session(self):
+        fake_azure_session = {
+            "value": "short-lived-azure-token",
+            "id": "azure-session-id",
+            "expires_at": 1234567890,
+        }
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AZURE_OPENAI_ENDPOINT": "https://demo.example.azure.com",
+                    "AZURE_OPENAI_API_KEY": "test-key",
+                    "AZURE_OPENAI_REALTIME_DEPLOYMENT": "gpt-realtime-2",
+                    "AZURE_OPENAI_REALTIME_PROTOCOL": "ga-webrtc",
+                },
+            ),
+            patch.object(
+                server,
+                "request_ga_realtime_client_secret",
+                return_value=fake_azure_session,
+            ),
+        ):
+            status, _, payload = self.post_json(
+                "/api/realtime/session",
+                {"scenarioKey": "access", "knowledge": {}},
+            )
+
+        self.assertEqual(200, status)
+        self.assertTrue(payload["demoSessionId"])
+        return payload["demoSessionId"]
+
+    def verify_live_demo_session(self, demo_session_id, verification_text):
+        return self.post_json(
+            "/api/demo-tools/verify-session",
+            {
+                "demo_session_id": demo_session_id,
+                "verification_text": verification_text,
+            },
+        )
 
     def test_public_assets_have_expected_mime_types(self):
         expectations = {
@@ -329,6 +382,145 @@ class DemoHttpServerTests(unittest.TestCase):
 
         self.assertEqual(415, status)
 
+    def test_direct_scheduling_posts_require_verified_session_capability(self):
+        requests = (
+            {"scenario_key": "access", "requested_window": "Friday morning"},
+            {"scenario_key": "access", "requested_window": "Friday at 9 AM"},
+            {
+                "scenario_key": "access",
+                "requested_window": "Friday at 11:30 AM",
+            },
+        )
+
+        for payload in requests:
+            with self.subTest(payload=payload):
+                status, _, result = self.post_json(
+                    "/api/demo-tools/confirm-appointment", payload
+                )
+                self.assertEqual(403, status)
+                self.assertEqual("validation_required", result["status"])
+                self.assertNotIn(
+                    result["status"],
+                    {"options_found", "alternate_proposed", "confirmed"},
+                )
+
+    def test_invalid_and_cross_session_capabilities_are_rejected(self):
+        first_session_id = self.create_live_demo_session()
+        second_session_id = self.create_live_demo_session()
+        _, _, verification = self.verify_live_demo_session(
+            first_session_id, "Jordan Lee, July 14, 1982"
+        )
+        valid_capability = verification["scheduling_capability"]
+
+        attempts = (
+            {
+                "demo_session_id": first_session_id,
+                "scheduling_capability": "invalid-capability",
+            },
+            {
+                "demo_session_id": second_session_id,
+                "scheduling_capability": valid_capability,
+            },
+        )
+        for authorization in attempts:
+            with self.subTest(authorization=authorization):
+                status, _, result = self.post_json(
+                    "/api/demo-tools/confirm-appointment",
+                    {
+                        **authorization,
+                        "requested_window": "Friday morning",
+                    },
+                )
+                self.assertEqual(403, status)
+                self.assertEqual("validation_required", result["status"])
+
+    def test_expired_capability_is_rejected(self):
+        demo_session_id = self.create_live_demo_session()
+        issued_at = time.monotonic()
+        with patch.object(server.time, "monotonic", return_value=issued_at):
+            _, _, verification = self.verify_live_demo_session(
+                demo_session_id, "Jordan Lee, July 14, 1982"
+            )
+
+        with patch.object(
+            server.time,
+            "monotonic",
+            return_value=(
+                issued_at + server.SCHEDULING_CAPABILITY_TTL_SECONDS + 1
+            ),
+        ):
+            status, _, result = self.post_json(
+                "/api/demo-tools/confirm-appointment",
+                {
+                    "demo_session_id": demo_session_id,
+                    "scheduling_capability": verification[
+                        "scheduling_capability"
+                    ],
+                    "requested_window": "Friday morning",
+                },
+            )
+
+        self.assertEqual(403, status)
+        self.assertEqual("validation_required", result["status"])
+
+    def test_verified_session_capability_permits_deterministic_flow(self):
+        demo_session_id = self.create_live_demo_session()
+        status, _, partial = self.verify_live_demo_session(
+            demo_session_id, "Jordan Lee"
+        )
+        self.assertEqual(200, status)
+        self.assertEqual("validation_pending", partial["status"])
+        self.assertNotIn("scheduling_capability", partial)
+
+        _, _, wrong_persona = self.verify_live_demo_session(
+            demo_session_id, "Alex Morgan, February 3, 1975"
+        )
+        self.assertEqual("validation_pending", wrong_persona["status"])
+
+        _, _, verified = self.verify_live_demo_session(
+            demo_session_id, "July 14, 1982"
+        )
+        self.assertEqual("verified", verified["status"])
+        capability = verified["scheduling_capability"]
+        self.assertNotEqual(demo_session_id, capability)
+
+        authorization = {
+            "demo_session_id": demo_session_id,
+            "scheduling_capability": capability,
+        }
+        with patch.object(
+            server,
+            "mock_confirm_appointment_reschedule",
+            side_effect=server.resolve_scheduling_request,
+        ):
+            options_status, _, options = self.post_json(
+                "/api/demo-tools/confirm-appointment",
+                {
+                    **authorization,
+                    "requested_window": "Friday morning",
+                    "patient_name": "Injected Patient",
+                    "facility": "Injected Facility",
+                },
+            )
+            confirmed_status, _, confirmed = self.post_json(
+                "/api/demo-tools/confirm-appointment",
+                {
+                    **authorization,
+                    "requested_window": "Friday at 11:30 AM",
+                    "selected_slot_id": "fri-1130",
+                },
+            )
+
+        self.assertEqual(200, options_status)
+        self.assertEqual("options_found", options["status"])
+        self.assertEqual(["fri-1130"], [
+            slot["slot_id"] for slot in options["available_slots"]
+        ])
+        self.assertEqual(200, confirmed_status)
+        self.assertEqual("confirmed", confirmed["status"])
+        self.assertEqual("Jordan Lee", confirmed["patient_name"])
+        self.assertEqual("Northlake Imaging Center", confirmed["facility"])
+
     def test_empty_and_oversized_json_bodies_are_rejected(self):
         empty_status, _, _ = self.request(
             "/api/demo-tools/confirm-appointment",
@@ -336,7 +528,7 @@ class DemoHttpServerTests(unittest.TestCase):
             data=b"",
             headers={"Content-Type": "application/json"},
         )
-        oversized_status, _, _ = self.request(
+        oversized_status, oversized_headers, _ = self.request(
             "/api/demo-tools/confirm-appointment",
             method="POST",
             data=b"x" * (server.MAX_JSON_BODY_BYTES + 1),
@@ -345,6 +537,7 @@ class DemoHttpServerTests(unittest.TestCase):
 
         self.assertEqual(400, empty_status)
         self.assertEqual(413, oversized_status)
+        self.assertEqual("close", oversized_headers["Connection"])
 
 
 if __name__ == "__main__":

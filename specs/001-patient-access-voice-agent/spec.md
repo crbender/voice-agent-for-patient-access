@@ -22,6 +22,7 @@ As an executive demo producer, I want a 90-second browser demo that makes an AI 
 - The public repository must include guardrails that prevent accidental publication of local `.env` files.
 - The local server must serve only an explicit allowlist of browser assets and must deny `.env*`, dotfiles, repository metadata, server source, tests, and directory listings for both GET and HEAD requests.
 - Demo verification must require both the name and date of birth associated with the currently signed-in profile. Another demo persona, a single factor, or assistant wording must not mark the session verified.
+- The local scheduling endpoint must enforce verification server-side. A Realtime session receives an opaque local session ID; after the server validates accumulated caller transcription against the active canonical demo profile, it issues a short-lived scheduling capability bound to that session. Missing, invalid, expired, or cross-session capabilities must return `validation_required`.
 - Scheduling confirmation must use server-owned patient, facility, and visit context plus canonical allowlisted slots. Negated, contradictory, ambiguous, or mismatched time requests must never produce a confirmation.
 - Realtime grounding must include the complete active-scenario knowledge payload without arbitrary character truncation. Oversized or malformed payloads must fail explicitly.
 - Patient and executive scenario selectors must update one shared scenario state so the visible page, profile, portal preview, transcript, and action packet cannot drift apart.
@@ -85,6 +86,7 @@ As an executive demo producer, I want a 90-second browser demo that makes an AI 
 - `/api/realtime/status` returns configured model metadata without exposing secrets.
 - `/api/realtime/session` can mint a short-lived client secret without returning the long-lived API key.
 - Live voice mode exposes a Realtime scheduling tool definition for `confirm_appointment_reschedule`, and the browser can bridge model tool calls to a local server endpoint without exposing secrets or calling external scheduling systems.
+- Direct scheduling POSTs without a valid verified-session capability cannot return `options_found`, `alternate_proposed`, or `confirmed`; a valid capability permits the deterministic two-step scheduling flow.
 - The local scheduling stub waits only a short, visible amount of time and returns deterministic availability by scenario. The transcript and action-packet UI must show "scheduling system" status while waiting and after completion.
 - Azure integration points are visible, and the scripted path remains usable if live voice is unavailable.
 - A GitHub Actions workflow fails pull requests if a tracked `.env` or `.env.*` file is present, except the approved `.env.example` template.
@@ -98,6 +100,7 @@ As an executive demo producer, I want a 90-second browser demo that makes an AI 
 - Switching scenarios from either view updates every patient and executive surface consistently.
 - The closed assistant panel is inert and excluded from keyboard navigation.
 - CI runs Python and JavaScript tests without requiring Playwright or an Azure credential.
+- Oversized HTTP requests return 413 and force the connection closed so unread body bytes cannot be reused as another request.
 
 ## Source anchors
 

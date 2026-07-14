@@ -14,9 +14,12 @@ Environment variables, automatically loaded from .env when present:
 """
 
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+import hashlib
 import json
 import os
 import re
+import secrets
+import threading
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -29,6 +32,10 @@ MAX_JSON_BODY_BYTES = 64 * 1024
 MAX_GROUNDING_CHARS = 24_000
 MAX_PROFILE_CHARS = 2_000
 MAX_DEMO_SCRIPT_CHARS = 12_000
+MAX_VERIFICATION_UTTERANCE_CHARS = 500
+MAX_VERIFICATION_CONTEXT_CHARS = 2_000
+DEMO_SESSION_TTL_SECONDS = 15 * 60
+SCHEDULING_CAPABILITY_TTL_SECONDS = 3 * 60
 PUBLIC_ASSETS = {
     "/": "index.html",
     "/index.html": "index.html",
@@ -120,6 +127,26 @@ NEGATED_WINDOW = re.compile(
     r"\b(?:except|not|cannot|can't|don't|do not|anything but)\b",
     re.IGNORECASE,
 )
+
+SERVER_VERIFICATION_PROFILES = {
+    "access": {
+        "name": "Jordan Lee",
+        "date_of_birth_variants": (
+            "july 14 1982",
+            "7 14 1982",
+            "07 14 1982",
+            "7 14 82",
+            "07 14 82",
+            "july fourteenth 1982",
+            "july 14 nineteen eighty two",
+            "july fourteenth nineteen eighty two",
+        ),
+    },
+}
+
+_DEMO_SESSION_LOCK = threading.Lock()
+_DEMO_SESSIONS = {}
+OPAQUE_TOKEN = re.compile(r"^[A-Za-z0-9_-]{20,128}$")
 
 SUPPORTED_REALTIME_MODELS = (
     "gpt-realtime-2",
@@ -237,6 +264,160 @@ def bounded_optional_text(value, field_name, max_length=240):
             400, f"{field_name} must be {max_length} characters or fewer."
         )
     return text
+
+
+def normalize_verification_text(value):
+    return re.sub(
+        r"\s+",
+        " ",
+        re.sub(r"[,./-]", " ", str(value or "").lower()),
+    ).strip()
+
+
+def verification_matches_profile(text, profile):
+    normalized = f" {normalize_verification_text(text)} "
+    name_parts = normalize_verification_text(profile["name"]).split()
+    name_matches = all(f" {part} " in normalized for part in name_parts)
+    dob_matches = any(
+        f" {normalize_verification_text(variant)} " in normalized
+        for variant in profile["date_of_birth_variants"]
+    )
+    return name_matches and dob_matches
+
+
+def _cleanup_demo_sessions(now):
+    expired_session_ids = [
+        session_id
+        for session_id, session in _DEMO_SESSIONS.items()
+        if session["expires_at"] <= now
+    ]
+    for session_id in expired_session_ids:
+        del _DEMO_SESSIONS[session_id]
+
+    for session in _DEMO_SESSIONS.values():
+        capability_expires_at = session.get("capability_expires_at")
+        if capability_expires_at and capability_expires_at <= now:
+            session["capability_digest"] = None
+            session["capability_expires_at"] = None
+
+
+def create_demo_session_state(scenario_key, now=None):
+    timestamp = time.monotonic() if now is None else now
+    demo_session_id = secrets.token_urlsafe(24)
+    with _DEMO_SESSION_LOCK:
+        _cleanup_demo_sessions(timestamp)
+        _DEMO_SESSIONS[demo_session_id] = {
+            "scenario_key": scenario_key,
+            "expires_at": timestamp + DEMO_SESSION_TTL_SECONDS,
+            "verification_text": "",
+            "verified": False,
+            "capability_digest": None,
+            "capability_expires_at": None,
+        }
+    return demo_session_id
+
+
+def record_server_verification(request_body, now=None):
+    demo_session_id = request_body.get("demo_session_id")
+    verification_text = request_body.get("verification_text")
+    if not isinstance(verification_text, str) or not verification_text.strip():
+        raise RequestValidationError(
+            400, "verification_text must be a non-empty string."
+        )
+    if len(verification_text) > MAX_VERIFICATION_UTTERANCE_CHARS:
+        raise RequestValidationError(
+            400,
+            (
+                "verification_text must be "
+                f"{MAX_VERIFICATION_UTTERANCE_CHARS} characters or fewer."
+            ),
+        )
+    if (
+        not isinstance(demo_session_id, str)
+        or not OPAQUE_TOKEN.fullmatch(demo_session_id)
+    ):
+        return 403, validation_required_result()
+
+    timestamp = time.monotonic() if now is None else now
+    with _DEMO_SESSION_LOCK:
+        _cleanup_demo_sessions(timestamp)
+        session = _DEMO_SESSIONS.get(demo_session_id)
+        if not session:
+            return 403, validation_required_result()
+
+        profile = SERVER_VERIFICATION_PROFILES.get(session["scenario_key"])
+        if not profile:
+            return 403, validation_required_result()
+
+        combined_text = normalize_verification_text(
+            f"{session['verification_text']} {verification_text}"
+        )
+        session["verification_text"] = combined_text[
+            -MAX_VERIFICATION_CONTEXT_CHARS:
+        ]
+        if not verification_matches_profile(session["verification_text"], profile):
+            return 200, {
+                "status": "validation_pending",
+                "message": "Both active-profile verification factors are required.",
+            }
+
+        capability = secrets.token_urlsafe(32)
+        session["verified"] = True
+        session["capability_digest"] = hashlib.sha256(
+            capability.encode("utf-8")
+        ).digest()
+        session["capability_expires_at"] = (
+            timestamp + SCHEDULING_CAPABILITY_TTL_SECONDS
+        )
+
+    return 200, {
+        "status": "verified",
+        "scheduling_capability": capability,
+        "expires_in": SCHEDULING_CAPABILITY_TTL_SECONDS,
+    }
+
+
+def authorize_scheduling_request(request_body, now=None):
+    demo_session_id = request_body.get("demo_session_id")
+    capability = request_body.get("scheduling_capability")
+    if (
+        not isinstance(demo_session_id, str)
+        or not OPAQUE_TOKEN.fullmatch(demo_session_id)
+        or not isinstance(capability, str)
+        or not OPAQUE_TOKEN.fullmatch(capability)
+    ):
+        return None
+
+    timestamp = time.monotonic() if now is None else now
+    capability_digest = hashlib.sha256(capability.encode("utf-8")).digest()
+    with _DEMO_SESSION_LOCK:
+        _cleanup_demo_sessions(timestamp)
+        session = _DEMO_SESSIONS.get(demo_session_id)
+        if (
+            not session
+            or not session["verified"]
+            or not session.get("capability_digest")
+            or not secrets.compare_digest(
+                capability_digest, session["capability_digest"]
+            )
+        ):
+            return None
+        return session["scenario_key"]
+
+
+def validation_required_result():
+    return {
+        "status": "validation_required",
+        "message": "A verified live demo session is required before scheduling.",
+        "next_action": (
+            "Verify the active caller by name and date of birth, then retry."
+        ),
+    }
+
+
+def _reset_demo_session_state():
+    with _DEMO_SESSION_LOCK:
+        _DEMO_SESSIONS.clear()
 
 
 def build_realtime_instructions(request_body):
@@ -812,6 +993,8 @@ class DemoHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
 
@@ -827,6 +1010,7 @@ class DemoHandler(SimpleHTTPRequestHandler):
         if length <= 0:
             raise RequestValidationError(400, "Invalid Content-Length.")
         if length > MAX_JSON_BODY_BYTES:
+            self.close_connection = True
             raise RequestValidationError(
                 413, f"JSON body exceeds {MAX_JSON_BODY_BYTES} bytes."
             )
@@ -942,9 +1126,23 @@ class DemoHandler(SimpleHTTPRequestHandler):
             return
 
         request_path = urlsplit(self.path).path
+        if request_path == "/api/demo-tools/verify-session":
+            try:
+                request_body = self._read_json_body()
+                status, result = record_server_verification(request_body)
+                self._json(status, result)
+            except RequestValidationError as exc:
+                self._json(exc.status, {"error": exc.message})
+            return
+
         if request_path == "/api/demo-tools/confirm-appointment":
             try:
                 request_body = self._read_json_body()
+                scenario_key = authorize_scheduling_request(request_body)
+                if not scenario_key:
+                    self._json(403, validation_required_result())
+                    return
+                request_body["scenario_key"] = scenario_key
                 self._json(200, mock_confirm_appointment_reschedule(request_body))
             except RequestValidationError as exc:
                 self._json(exc.status, {"error": exc.message})
@@ -984,6 +1182,9 @@ class DemoHandler(SimpleHTTPRequestHandler):
             if not ephemeral_token:
                 self._json(502, {"error": "Azure did not return a realtime client secret."})
                 return
+            demo_session_id = create_demo_session_state(
+                scenario_key_from_request(request_body)
+            )
             self._json(200, {
                 "token": ephemeral_token,
                 "callsUrl": calls_url,
@@ -992,6 +1193,8 @@ class DemoHandler(SimpleHTTPRequestHandler):
                 "transcriptionModel": cfg["transcription_model"],
                 "protocol": cfg["protocol"],
                 "sessionId": session_id,
+                "demoSessionId": demo_session_id,
+                "demoSessionExpiresIn": DEMO_SESSION_TTL_SECONDS,
                 "instructions": instructions,
                 "tools": [SCHEDULING_TOOL] if cfg["protocol"] != "legacy-webrtc" and is_patient_access_request(request_body) else [],
                 "expiresAt": data.get("expires_at") or data.get("expiresAt"),

@@ -24,6 +24,8 @@ This repository is a sample application for demonstration purposes. Security fix
 
 Keep Azure OpenAI credentials in a local `.env` file only. `.env` and `.env.*` are ignored by git, and the GitHub Actions workflow blocks tracked environment files other than `.env.example`. The local server uses an explicit static-asset allowlist, so `.env`, repository metadata, server source, and other unlisted paths are not served over HTTP.
 
+The demo scheduling route requires a short-lived opaque capability issued only after the local server validates both active-profile factors for an in-memory Realtime session. This prevents a direct unauthenticated POST from checking or confirming a slot. The values remain public synthetic demo identities, so this capability is a demo safety boundary—not production patient authentication.
+
 Before publishing, sharing, or archiving this project, confirm that `.env` is not included. If a real API key is ever committed, shared, pasted into an issue, or included in an archive, rotate that key immediately in Azure.
 
 If your environment requires Microsoft Entra ID instead of API keys, follow [docs/entra-identity-auth.md](docs/entra-identity-auth.md) and disable local authentication (API key auth) on the Azure AI/OpenAI resource after identity-based auth is validated.

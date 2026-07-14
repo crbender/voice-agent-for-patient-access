@@ -43,3 +43,5 @@ Spec-driven rule: update `spec.md`, `plan.md`, and `tasks.md` before implementat
 39. Replace generator `eval` loading with browser/CommonJS-compatible exports and make screenshot startup shell-free, repository-root aware, and non-blocking when Playwright is absent.
 40. Add Python and Node regression tests plus CI syntax/test checks.
 41. Align scripted revenue and multilingual flows with verification-before-disclosure and add current Azure Voice Live, Azure Realtime WebRTC, and May 7, 2026 OpenAI voice source anchors.
+42. Enforce scheduling verification on the local server with bounded transcript validation, opaque Realtime-session IDs, expiring session-bound capabilities, HTTP regression tests, and connection-close handling for oversized unread bodies.
+43. Add UI proof screenshots and organize the pull-request description by server, browser, UI, and validation scopes.
