@@ -297,6 +297,8 @@ def _cleanup_demo_sessions(now):
     for session in _DEMO_SESSIONS.values():
         capability_expires_at = session.get("capability_expires_at")
         if capability_expires_at and capability_expires_at <= now:
+            session["verified"] = False
+            session["verification_text"] = ""
             session["capability_digest"] = None
             session["capability_expires_at"] = None
 

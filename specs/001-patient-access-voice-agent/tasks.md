@@ -45,3 +45,4 @@ Spec-driven rule: update `spec.md`, `plan.md`, and `tasks.md` before implementat
 41. Align scripted revenue and multilingual flows with verification-before-disclosure and add current Azure Voice Live, Azure Realtime WebRTC, and May 7, 2026 OpenAI voice source anchors.
 42. Enforce scheduling verification on the local server with bounded transcript validation, opaque Realtime-session IDs, expiring session-bound capabilities, HTTP regression tests, and connection-close handling for oversized unread bodies.
 43. Add UI proof screenshots and organize the pull-request description by server, browser, UI, and validation scopes.
+44. Clear verified state and accumulated verification evidence when a scheduling capability expires, and prove through HTTP regression coverage that renewal requires both factors again.

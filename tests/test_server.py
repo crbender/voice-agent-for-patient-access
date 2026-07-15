@@ -434,7 +434,7 @@ class DemoHttpServerTests(unittest.TestCase):
                 self.assertEqual(403, status)
                 self.assertEqual("validation_required", result["status"])
 
-    def test_expired_capability_is_rejected(self):
+    def test_expired_capability_requires_fresh_verification(self):
         demo_session_id = self.create_live_demo_session()
         issued_at = time.monotonic()
         with patch.object(server.time, "monotonic", return_value=issued_at):
@@ -442,14 +442,16 @@ class DemoHttpServerTests(unittest.TestCase):
                 demo_session_id, "Jordan Lee, July 14, 1982"
             )
 
+        expired_at = issued_at + server.SCHEDULING_CAPABILITY_TTL_SECONDS + 1
         with patch.object(
             server.time,
             "monotonic",
-            return_value=(
-                issued_at + server.SCHEDULING_CAPABILITY_TTL_SECONDS + 1
-            ),
+            return_value=expired_at,
         ):
-            status, _, result = self.post_json(
+            pending_status, _, pending = self.verify_live_demo_session(
+                demo_session_id, "x"
+            )
+            scheduling_status, _, scheduling = self.post_json(
                 "/api/demo-tools/confirm-appointment",
                 {
                     "demo_session_id": demo_session_id,
@@ -459,9 +461,20 @@ class DemoHttpServerTests(unittest.TestCase):
                     "requested_window": "Friday morning",
                 },
             )
+            _, _, reverified = self.verify_live_demo_session(
+                demo_session_id, "Jordan Lee, July 14, 1982"
+            )
 
-        self.assertEqual(403, status)
-        self.assertEqual("validation_required", result["status"])
+        self.assertEqual(200, pending_status)
+        self.assertEqual("validation_pending", pending["status"])
+        self.assertNotIn("scheduling_capability", pending)
+        self.assertEqual(403, scheduling_status)
+        self.assertEqual("validation_required", scheduling["status"])
+        self.assertEqual("verified", reverified["status"])
+        self.assertNotEqual(
+            verification["scheduling_capability"],
+            reverified["scheduling_capability"],
+        )
 
     def test_verified_session_capability_permits_deterministic_flow(self):
         demo_session_id = self.create_live_demo_session()
