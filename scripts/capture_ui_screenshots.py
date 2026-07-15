@@ -14,18 +14,17 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-from playwright.sync_api import sync_playwright
-
+ROOT = Path(__file__).resolve().parents[1]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Capture Riley UI screenshots for sharing")
@@ -73,20 +72,26 @@ def wait_for_http(url: str, timeout_s: float) -> bool:
             with urlopen(url, timeout=2.0) as response:  # nosec B310 - local demo endpoint only
                 if 200 <= response.status < 500:
                     return True
-        except URLError:
+        except HTTPError as error:
+            status = error.code
+            error.close()
+            if status < 500:
+                return True
             time.sleep(0.3)
-        except Exception:
+        except (URLError, TimeoutError, OSError):
             time.sleep(0.3)
     return False
 
 
 def start_server(command: str, cwd: Path) -> subprocess.Popen[str]:
+    args = shlex.split(command)
+    if not args:
+        raise ValueError("Server command cannot be empty")
     return subprocess.Popen(
-        command,
+        args,
         cwd=str(cwd),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        shell=True,
         text=True,
         env=os.environ.copy(),
     )
@@ -108,50 +113,64 @@ def save_screenshot(page, path: Path, locator: Optional[str] = None) -> None:
 
 
 def capture(url: str, output_dir: Path, width: int, height: int) -> None:
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(
-            headless=True,
-            args=[
-                "--use-fake-ui-for-media-stream",
-                "--use-fake-device-for-media-stream",
-            ],
-        )
-        context = browser.new_context(
-            viewport={"width": width, "height": height},
-            permissions=["microphone"],
-        )
-        page = context.new_page()
+    try:
+        from playwright.sync_api import Error as PlaywrightError
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+        from playwright.sync_api import sync_playwright
+    except ImportError as error:
+        raise RuntimeError(
+            "Playwright is required for screenshots. Install Playwright and "
+            "its Chromium browser first."
+        ) from error
 
-        page.goto(url, wait_until="networkidle", timeout=30000)
-        page.wait_for_selector("#patientApp", timeout=10000)
-        page.wait_for_selector("#viewSwitch", timeout=10000)
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(
+                headless=True,
+                args=[
+                    "--use-fake-ui-for-media-stream",
+                    "--use-fake-device-for-media-stream",
+                ],
+            )
+            context = browser.new_context(
+                viewport={"width": width, "height": height},
+                permissions=["microphone"],
+            )
+            page = context.new_page()
 
-        # 1) Patient primary UI shell
-        save_screenshot(page, output_dir / "01-patient-view-full.png")
+            page.goto(url, wait_until="networkidle", timeout=30000)
+            page.wait_for_selector("#patientApp", timeout=10000)
+            page.wait_for_selector("#viewSwitch", timeout=10000)
 
-        # 2) Executive primary UI shell
-        page.locator("#viewSwitch").click()
-        page.wait_for_selector("#executiveApp[aria-hidden='false']", timeout=10000)
-        page.wait_for_selector("#scenarioGrid", timeout=10000)
-        save_screenshot(page, output_dir / "02-executive-view-full.png")
+            save_screenshot(page, output_dir / "01-patient-view-full.png")
 
-        # 3) Capture right-side supervisor panel (static primary UI)
-        save_screenshot(
-            page,
-            output_dir / "03-realtime-status-panel.png",
-            locator=".dashboard > aside.panel.stack:last-of-type",
-        )
+            page.locator("#viewSwitch").click()
+            page.wait_for_selector("#executiveApp[aria-hidden='false']", timeout=10000)
+            page.wait_for_selector("#scenarioGrid", timeout=10000)
+            save_screenshot(page, output_dir / "02-executive-view-full.png")
 
-        # 4) Optional close-up of status text block
-        save_screenshot(page, output_dir / "04-realtime-status-text.png", locator="#foundryDetail")
+            save_screenshot(
+                page,
+                output_dir / "03-realtime-status-panel.png",
+                locator=".dashboard > aside.panel.stack:last-of-type",
+            )
+            save_screenshot(
+                page,
+                output_dir / "04-realtime-status-text.png",
+                locator="#foundryDetail",
+            )
 
-        context.close()
-        browser.close()
+            context.close()
+            browser.close()
+    except PlaywrightTimeoutError as error:
+        raise RuntimeError(f"Playwright timed out: {error}") from error
+    except PlaywrightError as error:
+        raise RuntimeError(f"Playwright could not capture the demo: {error}") from error
 
 
 def main() -> int:
     args = parse_args()
-    repo_root = Path.cwd()
+    repo_root = ROOT
     output_root = (repo_root / args.output_dir).resolve()
     run_dir = ensure_output_dir(output_root)
 
@@ -162,7 +181,7 @@ def main() -> int:
     try:
         if not wait_for_http(args.url, args.startup_timeout):
             print(f"Server not reachable at {args.url} within {args.startup_timeout:.1f}s")
-            if server_proc and server_proc.stdout:
+            if server_proc and server_proc.poll() is not None and server_proc.stdout:
                 tail = server_proc.stdout.read()[-3000:]
                 if tail:
                     print("\nServer output:\n" + tail)
@@ -171,8 +190,8 @@ def main() -> int:
         capture(args.url, run_dir, args.width, args.height)
         print(f"\nDone. Screenshot set saved to: {run_dir}")
         return 0
-    except PlaywrightTimeoutError as error:
-        print(f"Playwright timed out: {error}")
+    except RuntimeError as error:
+        print(str(error))
         return 1
     finally:
         if server_proc and server_proc.poll() is None:

@@ -1,3 +1,5 @@
+"use strict";
+
 const state = {
   scenarioKey: "access",
   timers: [],
@@ -15,6 +17,9 @@ const state = {
   schedulingWindowsHandled: new Set(),
   voiceVerified: false,
   callerVerificationProvided: false,
+  demoSessionId: "",
+  schedulingCapability: "",
+  verificationPromise: null,
   liveConversationHints: {
     languagePreference: "",
     caregiverContext: ""
@@ -34,7 +39,9 @@ const state = {
   totalScenes: 0,
   currentSceneIndex: -1,
   ttsVoice: null,
-  currentUtterance: null
+  currentUtterance: null,
+  lastFocusedElement: null,
+  stoppingRealtime: false
 };
 
 const SCENARIO_ICONS = {
@@ -47,6 +54,8 @@ const AVATAR_AGENT = '<svg viewBox="0 0 24 24" fill="none"><path d="M5 11a7 7 0 
 const AVATAR_SYSTEM = '<svg viewBox="0 0 24 24" fill="none"><path d="M12 3l9 5-9 5-9-5 9-5z" stroke="currentColor" stroke-width="1.8"/><path d="M3 13l9 5 9-5" stroke="currentColor" stroke-width="1.8"/></svg>';
 
 const SCHEDULING_TOOL_NAME = "confirm_appointment_reschedule";
+const MAX_TRANSCRIPT_MESSAGES = 80;
+const DOMAIN = window.VOICE_DEMO_DOMAIN;
 const DEBUG_REALTIME = new URLSearchParams(window.location.search).has("debugRealtime") ||
   window.localStorage?.getItem("voiceDemoDebug") === "1";
 
@@ -91,7 +100,9 @@ const els = {
   viewSwitchState: document.getElementById("viewSwitchState"),
   siteNav: document.getElementById("siteNav"),
   sitePage: document.getElementById("sitePage"),
+  patientApp: document.getElementById("patientApp"),
   assistantFab: document.getElementById("assistantFab"),
+  assistantBackdrop: document.getElementById("assistantBackdrop"),
   assistantPanel: document.getElementById("assistantPanel"),
   assistantPanelTitle: document.getElementById("assistantPanelTitle"),
   assistantPanelClose: document.getElementById("assistantPanelClose"),
@@ -109,6 +120,59 @@ const els = {
 
 function scenario() {
   return window.DEMO_SCENARIOS[state.scenarioKey];
+}
+
+function activeVerificationRecord() {
+  const acceptedValues = window.SYNTHETIC_KNOWLEDGE?.shared?.validationProtocol?.acceptedDemoValues || [];
+  return DOMAIN.findActiveVerificationRecord(signedInProfileForCurrentScenario(), acceptedValues);
+}
+
+function scopedRealtimeKnowledge() {
+  return DOMAIN.buildScopedRealtimeContext(
+    window.SYNTHETIC_KNOWLEDGE,
+    state.scenarioKey
+  ).knowledge;
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+function waitForDataChannelOpen(dataChannel, timeoutMs = 10000) {
+  if (dataChannel.readyState === "open") return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("Realtime data channel did not become ready."));
+    }, timeoutMs);
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      dataChannel.removeEventListener("open", handleOpen);
+      dataChannel.removeEventListener("close", handleClose);
+      dataChannel.removeEventListener("error", handleError);
+    };
+    const handleOpen = () => {
+      cleanup();
+      resolve();
+    };
+    const handleClose = () => {
+      cleanup();
+      reject(new Error("Realtime data channel closed before it was ready."));
+    };
+    const handleError = () => {
+      cleanup();
+      reject(new Error("Realtime data channel failed before it was ready."));
+    };
+    dataChannel.addEventListener("open", handleOpen);
+    dataChannel.addEventListener("close", handleClose);
+    dataChannel.addEventListener("error", handleError);
+  });
 }
 
 function showToast(message) {
@@ -129,13 +193,7 @@ function renderScenarioCards() {
   `).join("");
 
   els.scenarioGrid.querySelectorAll("button").forEach(button => {
-    button.addEventListener("click", () => {
-      if (state.peerConnection) stopRealtimeSession();
-      state.scenarioKey = button.dataset.scenario;
-      resetDemo();
-      renderScenario();
-      renderScenarioCards();
-    });
+    button.addEventListener("click", () => selectScenario(button.dataset.scenario));
   });
 }
 
@@ -226,7 +284,11 @@ function addMessage(item) {
   </div>`;
 
   row.innerHTML = isPatient ? `${bubbleHtml}${avatarHtml}` : `${avatarHtml}${bubbleHtml}`;
+  els.transcript.querySelector(".empty-state")?.remove();
   els.transcript.appendChild(row);
+  while (els.transcript.querySelectorAll(".bubble-row").length > MAX_TRANSCRIPT_MESSAGES) {
+    els.transcript.querySelector(".bubble-row")?.remove();
+  }
   els.transcript.scrollTop = els.transcript.scrollHeight;
 }
 
@@ -452,15 +514,15 @@ function runScriptedDemo() {
 
 async function checkRealtime() {
   try {
-    const response = await fetch("/api/realtime/status");
+    const response = await fetchWithTimeout("/api/realtime/status", {}, 3000);
     if (!response.ok) throw new Error("No proxy");
     const data = await response.json();
     state.realtimeAvailable = Boolean(data.configured);
-    els.realtimeStatus.textContent = data.configured ? "Realtime voice configured" : "Realtime voice not configured";
+    els.realtimeStatus.textContent = data.configured ? "Realtime configuration detected" : "Realtime voice not configured";
     els.realtimeDetail.textContent = data.configured
       ? `Deployment: ${data.deployment}. Voice: ${data.voice}. Protocol: ${data.protocol}. Auth: ${data.auth}.`
       : "Add AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_REALTIME_DEPLOYMENT, and AZURE_OPENAI_API_KEY to .env, then restart server.py.";
-    setConnectionState(data.configured ? "ready" : "idle", data.configured ? "Realtime-ready" : "Scripted mode");
+    setConnectionState(data.configured ? "ready" : "idle", data.configured ? "Configured" : "Scripted mode");
   } catch {
     state.realtimeAvailable = false;
     els.realtimeStatus.textContent = "Static file mode";
@@ -501,19 +563,13 @@ async function startRealtimeSession() {
   try {
     state.realtimeEventLog = [];
     state.audioPlaybackLog = [];
-    const sessionResponse = await fetch("/api/realtime/session", {
+    const sessionResponse = await fetchWithTimeout("/api/realtime/session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        scenario: scenario().label,
-        systemPrompt: scenario().systemPrompt,
-        talkTrack: scenario().talkTrack,
-        close: scenario().close,
-        knowledge: {
-          shared: window.SYNTHETIC_KNOWLEDGE?.shared || {},
-          scenario: window.SYNTHETIC_KNOWLEDGE?.[state.scenarioKey] || {}
-        },
-        signedInProfile: (window.SYNTHETIC_KNOWLEDGE?.shared?.signedInProfiles || {})[state.scenarioKey] || null,
+        scenarioKey: state.scenarioKey,
+        knowledge: scopedRealtimeKnowledge(),
+        signedInProfile: signedInProfileForCurrentScenario(),
         demoScript: scenario().script.map(item => ({
           scene: item.scene,
           who: item.who,
@@ -522,23 +578,26 @@ async function startRealtimeSession() {
           packet: item.packet || []
         }))
       })
-    });
+    }, 15000);
     const sessionData = await sessionResponse.json();
     if (!sessionResponse.ok) {
       const azureMessage = sessionData.error?.message || sessionData.error || "Realtime session request failed.";
       throw new Error(sessionData.guidance ? `${azureMessage} ${sessionData.guidance}` : azureMessage);
     }
+    if (!sessionData.demoSessionId) {
+      throw new Error("Realtime session did not include demo authorization state.");
+    }
+    state.demoSessionId = sessionData.demoSessionId;
+    state.schedulingCapability = "";
+    state.voiceVerified = false;
 
     const peerConnection = new RTCPeerConnection();
     const remoteAudio = document.createElement("audio");
     remoteAudio.id = "realtimeRemoteAudio";
+    remoteAudio.className = "realtime-remote-audio";
     remoteAudio.autoplay = true;
     remoteAudio.playsInline = true;
     remoteAudio.preload = "auto";
-    remoteAudio.style.position = "fixed";
-    remoteAudio.style.left = "-9999px";
-    remoteAudio.style.width = "1px";
-    remoteAudio.style.height = "1px";
     remoteAudio.setAttribute("aria-hidden", "true");
     document.body.appendChild(remoteAudio);
     state.peerConnection = peerConnection;
@@ -592,7 +651,17 @@ async function startRealtimeSession() {
       if (s === "connected") {
         setConnectionState("live", "Live voice");
         if (els.orbLiveLabel) els.orbLiveLabel.textContent = isPatientView() ? "Tap mic to end" : "Conversation live";
-      } else if (s === "failed" || s === "disconnected") {
+      } else if (s === "failed") {
+        setConnectionState("error", `Voice: ${s}`);
+        if (state.peerConnection === peerConnection) {
+          addMessage({
+            who: "Realtime status",
+            type: "system",
+            text: "The live voice connection ended unexpectedly. You can retry or use the scripted demo."
+          });
+          stopRealtimeSession();
+        }
+      } else if (s === "disconnected") {
         setConnectionState("error", `Voice: ${s}`);
       } else {
         setConnectionState("warn", `Voice: ${s}`);
@@ -655,25 +724,41 @@ async function startRealtimeSession() {
       }));
     });
     dataChannel.addEventListener("message", event => handleRealtimeEvent(event.data));
-    dataChannel.addEventListener("close", () => setSpeaking(false));
+    dataChannel.addEventListener("close", () => {
+      setSpeaking(false);
+      if (!state.stoppingRealtime && state.dataChannel === dataChannel) {
+        addMessage({
+          who: "Realtime status",
+          type: "system",
+          text: "The live voice channel closed. You can retry or use the scripted demo."
+        });
+        stopRealtimeSession();
+      }
+    });
 
     const offer = await peerConnection.createOffer();
     await peerConnection.setLocalDescription(offer);
-    const sdpResponse = await fetch(sessionData.callsUrl, {
+    const sdpResponse = await fetchWithTimeout(sessionData.callsUrl, {
       method: "POST",
       body: offer.sdp,
       headers: {
         Authorization: `Bearer ${sessionData.token}`,
         "Content-Type": "application/sdp"
       }
-    });
-    if (!sdpResponse.ok) throw new Error(await sdpResponse.text());
+    }, 15000);
+    if (!sdpResponse.ok) throw new Error(`Realtime connection failed with status ${sdpResponse.status}.`);
     await peerConnection.setRemoteDescription({ type: "answer", sdp: await sdpResponse.text() });
+    await waitForDataChannelOpen(dataChannel);
     els.startRealtimeBtn.textContent = "Conversation live";
     if (els.patientStartBtn) els.patientStartBtn.textContent = "Conversation live";
     showToast("Live realtime voice connected.");
   } catch (error) {
-    addMessage({ who: "Realtime error", type: "system", text: error.message || String(error) });
+    if (DEBUG_REALTIME) console.error("[realtime-start]", error);
+    addMessage({
+      who: "Realtime status",
+      type: "system",
+      text: "Live voice could not start. Check the local configuration and retry, or use the scripted demo."
+    });
     stopRealtimeSession();
   }
 }
@@ -682,7 +767,8 @@ function handleRealtimeEvent(rawMessage) {
   let event;
   try {
     event = JSON.parse(rawMessage);
-  } catch {
+  } catch (error) {
+    if (DEBUG_REALTIME) console.warn("[realtime-event-invalid]", error);
     return;
   }
   logRealtimeEvent(event);
@@ -691,16 +777,13 @@ function handleRealtimeEvent(rawMessage) {
     state.lastCallerTranscript = event.transcript;
     addMessage({ who: "Caller", type: "patient", text: event.transcript });
     updateVoiceVerificationFromCallerText(event.transcript);
+    syncServerVerification(event.transcript);
     updateLiveConversationHints(event.transcript);
   }
   if (event.type === "response.output_audio_transcript.done" && event.transcript) {
     const agentText = event.transcript;
     state.agentAudioSegments.push(agentText);
-    updateLiveStateFromAgentText(agentText);
     state.callbackDriftCancelled = false;
-  }
-  if (event.type === "response.output_text.done" && event.text) {
-    updateLiveStateFromAgentText(event.text);
   }
   if (event.type === "response.output_audio_transcript.delta" && event.delta) {
     state.agentTranscriptBuffer += event.delta;
@@ -721,7 +804,12 @@ function handleRealtimeEvent(rawMessage) {
     setSpeaking(false);
   }
   if (event.type === "error" && event.error?.message) {
-    addMessage({ who: "Realtime error", type: "system", text: event.error.message });
+    if (DEBUG_REALTIME) console.error("[realtime-service]", event.error);
+    addMessage({
+      who: "Realtime status",
+      type: "system",
+      text: "The live voice service reported an error. End the conversation and retry."
+    });
   }
   maybeHandleRealtimeToolCall(event);
 }
@@ -733,7 +821,6 @@ function flushAgentAudioTurn() {
     : cleanAgentTurn(state.agentAudioTurnText);
   if (text) {
     addMessage({ who: "Riley", type: "agent", text });
-    updateLiveStateFromAgentText(text);
   }
   state.agentAudioTurnText = "";
   state.agentAudioSegments = [];
@@ -767,6 +854,7 @@ function maybeHandleRealtimeToolCall(event) {
   if (event.type === "response.function_call_arguments.delta" && event.call_id && event.delta) {
     const current = state.toolCallArgumentDeltas.get(event.call_id) || "";
     state.toolCallArgumentDeltas.set(event.call_id, current + event.delta);
+    clearPendingToolWatchdog(event.call_id);
     if ((event.name || state.toolCallNames.get(event.call_id)) === SCHEDULING_TOOL_NAME) {
       showSchedulingPending(event.call_id);
     }
@@ -822,7 +910,7 @@ function schedulePendingToolWatchdog(callId) {
     if (!requestedWindow) return;
     state.handledToolCalls.add(callId);
     runClientSchedulingFallback(requestedWindow, `watchdog:${callId}`, callId);
-  }, 1200);
+  }, 12000);
   state.pendingToolTimers.set(callId, timer);
 }
 
@@ -855,24 +943,23 @@ async function handleSchedulingToolCall(callId, rawArguments) {
   }
 
   const payload = {
-    scenario: scenario().label,
     scenario_key: state.scenarioKey,
-    patient_name: args.patient_name || args.patientName || "Jordan Lee",
     requested_window: args.requested_window || args.requestedWindow || args.preferred_window || "",
-    visit_type: args.visit_type || args.visitType || "imaging",
-    facility: args.facility || "Northlake Imaging Center",
+    selected_slot_id: args.selected_slot_id || args.selectedSlotId || "",
     language_preference: args.language_preference || args.languagePreference || "",
-    caregiver_context: args.caregiver_context || args.caregiverContext || ""
+    caregiver_context: args.caregiver_context || args.caregiverContext || "",
+    demo_session_id: state.demoSessionId,
+    scheduling_capability: state.schedulingCapability
   };
 
-  if (!state.voiceVerified && callerMentionedAnyAcceptedVerificationValue()) {
-    state.voiceVerified = true;
-  }
+  await waitForServerVerification();
+  payload.demo_session_id = state.demoSessionId;
+  payload.scheduling_capability = state.schedulingCapability;
 
-  if (state.scenarioKey === "access" && !state.voiceVerified) {
+  if (state.scenarioKey === "access" && !hasSchedulingAuthorization()) {
     const result = {
       status: "validation_required",
-      message: "Voice-channel verification is required before scheduling.",
+      message: "Server-verified voice-channel verification is required before scheduling.",
       next_action: "Ask for caller name and date of birth before checking appointment availability."
     };
     sendSchedulingFunctionOutputToRealtime(callId, result, "Ask for caller name and date of birth, then continue the scheduling workflow. Do not ask for a callback.");
@@ -907,14 +994,20 @@ async function handleSchedulingToolCall(callId, rawArguments) {
 
   try {
     const startedAt = performance.now();
-    const response = await fetch("/api/demo-tools/confirm-appointment", {
+    const response = await fetchWithTimeout("/api/demo-tools/confirm-appointment", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
-    });
+    }, 8000);
     const result = await response.json();
     result.client_elapsed_ms = Math.round(performance.now() - startedAt);
-    if (!response.ok) throw new Error(result.error || "Scheduling tool failed.");
+    if (result.status === "validation_required") {
+      state.voiceVerified = false;
+      state.schedulingCapability = "";
+    }
+    if (!response.ok && result.status !== "validation_required") {
+      throw new Error(result.error || "Scheduling tool failed.");
+    }
 
     const resultText = formatSchedulingResult(result);
     addMessage({ who: "Scheduling system", type: "system", text: resultText });
@@ -929,9 +1022,10 @@ async function handleSchedulingToolCall(callId, rawArguments) {
   } catch (error) {
     const result = {
       status: "error",
-      message: error.message || String(error),
+      message: "Scheduling is temporarily unavailable.",
       next_action: "Route to staff queue."
     };
+    if (DEBUG_REALTIME) console.error("[scheduling-tool]", error);
     addMessage({ who: "Scheduling system", type: "system", text: result.message });
     state.pendingToolStatuses.delete(callId);
     sendSchedulingFunctionOutputToRealtime(
@@ -942,97 +1036,88 @@ async function handleSchedulingToolCall(callId, rawArguments) {
   }
 }
 
-function updateLiveStateFromAgentText(text) {
-  const normalized = text.toLowerCase();
-  if (
-    (state.callerVerificationProvided || callerMentionedAnyAcceptedVerificationValue()) && (
-      normalized.includes("that matches") ||
-      normalized.includes("validation is complete") ||
-      normalized.includes("verification is complete")
-    )
-  ) {
-    state.voiceVerified = true;
-  }
-}
-
 function updateVoiceVerificationFromCallerText(text) {
-  state.callerVerificationText = normalizeVerificationText(`${state.callerVerificationText} ${text}`);
-  const normalized = state.callerVerificationText;
+  state.callerVerificationText = DOMAIN.normalizeVerificationText(`${state.callerVerificationText} ${text}`);
   const acceptedValues = window.SYNTHETIC_KNOWLEDGE?.shared?.validationProtocol?.acceptedDemoValues || [];
-  const matchesAcceptedValue = acceptedValues.some(value =>
-    nameMatchesVerification(normalized, value.name) &&
-    dobMatchesVerification(normalized, value.dateOfBirth)
+  const matchesActiveProfile = DOMAIN.matchesActiveVerification(
+    state.callerVerificationText,
+    signedInProfileForCurrentScenario(),
+    acceptedValues
   );
-  if (matchesAcceptedValue) {
+  if (matchesActiveProfile) {
     state.callerVerificationProvided = true;
-    state.voiceVerified = true;
   }
 }
 
-function callerMentionedAnyAcceptedVerificationValue() {
-  const acceptedValues = window.SYNTHETIC_KNOWLEDGE?.shared?.validationProtocol?.acceptedDemoValues || [];
-  return acceptedValues.some(value =>
-    nameMatchesVerification(state.callerVerificationText, value.name) ||
-    dobMatchesVerification(state.callerVerificationText, value.dateOfBirth)
-  );
+function syncServerVerification(text) {
+  if (
+    state.scenarioKey !== "access" ||
+    !state.demoSessionId ||
+    state.schedulingCapability
+  ) {
+    return Promise.resolve(null);
+  }
+
+  const demoSessionId = state.demoSessionId;
+  const previous = state.verificationPromise || Promise.resolve();
+  const operation = previous
+    .catch(() => null)
+    .then(async () => {
+      if (state.demoSessionId !== demoSessionId) return null;
+      try {
+        const response = await fetchWithTimeout(
+          "/api/demo-tools/verify-session",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              demo_session_id: demoSessionId,
+              verification_text: text
+            })
+          },
+          5000
+        );
+        const result = await response.json();
+        if (state.demoSessionId !== demoSessionId) return result;
+        if (
+          response.ok &&
+          result.status === "verified" &&
+          result.scheduling_capability
+        ) {
+          state.schedulingCapability = result.scheduling_capability;
+          state.voiceVerified = true;
+          state.callerVerificationProvided = true;
+        } else if (result.status === "validation_required") {
+          state.schedulingCapability = "";
+          state.voiceVerified = false;
+        }
+        return result;
+      } catch (error) {
+        if (DEBUG_REALTIME) console.error("[server-verification]", error);
+        return null;
+      }
+    });
+
+  state.verificationPromise = operation;
+  operation.finally(() => {
+    if (state.verificationPromise === operation) {
+      state.verificationPromise = null;
+    }
+  });
+  return operation;
 }
 
-function normalizeVerificationText(text) {
-  return String(text || "")
-    .toLowerCase()
-    .replace(/[,./-]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+async function waitForServerVerification() {
+  if (state.verificationPromise) {
+    await state.verificationPromise;
+  }
 }
 
-function nameMatchesVerification(normalizedText, name) {
-  const parts = normalizeVerificationText(name).split(" ").filter(Boolean);
-  return parts.length > 0 && parts.every(part => normalizedText.includes(part));
-}
-
-function dobMatchesVerification(normalizedText, dateOfBirth) {
-  const dob = new Date(dateOfBirth);
-  if (Number.isNaN(dob.getTime())) return normalizedText.includes(normalizeVerificationText(dateOfBirth));
-  const monthNames = [
-    "january", "february", "march", "april", "may", "june",
-    "july", "august", "september", "october", "november", "december"
-  ];
-  const month = monthNames[dob.getUTCMonth()];
-  const day = String(dob.getUTCDate());
-  const year = String(dob.getUTCFullYear());
-  const shortYear = year.slice(-2);
-  const dayOrdinalWords = {
-    "1": "first", "2": "second", "3": "third", "4": "fourth", "5": "fifth",
-    "6": "sixth", "7": "seventh", "8": "eighth", "9": "ninth", "10": "tenth",
-    "11": "eleventh", "12": "twelfth", "13": "thirteenth", "14": "fourteenth",
-    "15": "fifteenth", "16": "sixteenth", "17": "seventeenth", "18": "eighteenth",
-    "19": "nineteenth", "20": "twentieth", "21": "twenty first", "22": "twenty second",
-    "23": "twenty third", "24": "twenty fourth", "25": "twenty fifth",
-    "26": "twenty sixth", "27": "twenty seventh", "28": "twenty eighth",
-    "29": "twenty ninth", "30": "thirtieth", "31": "thirty first"
-  };
-  const spokenYears = {
-    "1975": "nineteen seventy five",
-    "1979": "nineteen seventy nine",
-    "1982": "nineteen eighty two",
-    "1984": "nineteen eighty four",
-    "1988": "nineteen eighty eight",
-    "1990": "nineteen ninety",
-    "1992": "nineteen ninety two"
-  };
-  const ordinalDay = dayOrdinalWords[day];
-  const spokenYear = spokenYears[year];
-  return (
-    normalizedText.includes(`${month} ${day} ${year}`) ||
-    normalizedText.includes(`${month} ${day}th ${year}`) ||
-    (ordinalDay && normalizedText.includes(`${month} ${ordinalDay} ${year}`)) ||
-    (ordinalDay && spokenYear && normalizedText.includes(`${month} ${ordinalDay} ${spokenYear}`)) ||
-    (spokenYear && normalizedText.includes(`${month} ${day} ${spokenYear}`)) ||
-    (spokenYear && normalizedText.includes(`${month} ${day}th ${spokenYear}`)) ||
-    normalizedText.includes(`${dob.getUTCMonth() + 1} ${day} ${year}`) ||
-    normalizedText.includes(`${String(dob.getUTCMonth() + 1).padStart(2, "0")} ${day.padStart(2, "0")} ${year}`) ||
-    normalizedText.includes(`${dob.getUTCMonth() + 1} ${day} ${shortYear}`) ||
-    normalizedText.includes(normalizeVerificationText(dateOfBirth))
+function hasSchedulingAuthorization() {
+  return Boolean(
+    state.voiceVerified &&
+    state.demoSessionId &&
+    state.schedulingCapability
   );
 }
 
@@ -1046,49 +1131,14 @@ function updateLiveConversationHints(text) {
   }
 }
 
-function isElevenThirtyMention(normalizedText) {
-  return normalizedText.includes("11:30") ||
-    normalizedText.includes("11.30") ||
-    normalizedText.includes("1130") ||
-    normalizedText.includes("eleven thirty") ||
-    normalizedText.includes("eleven-thirty");
-}
-
-function isTenFortyFiveMention(normalizedText) {
-  return normalizedText.includes("10:45") ||
-    normalizedText.includes("10.45") ||
-    normalizedText.includes("1045") ||
-    normalizedText.includes("ten forty five") ||
-    normalizedText.includes("ten forty-five");
-}
-
-function isTwoFifteenMention(normalizedText) {
-  return normalizedText.includes("2:15") ||
-    normalizedText.includes("2.15") ||
-    normalizedText.includes("215") ||
-    normalizedText.includes("two fifteen") ||
-    normalizedText.includes("two-fifteen");
-}
-
 function inferSchedulingWindowFromText(text) {
-  const normalized = (text || "").toLowerCase();
-  if (isElevenThirtyMention(normalized)) return "Friday at 11:30 AM";
-  if (isTenFortyFiveMention(normalized)) return "Thursday at 10:45 AM";
-  if (isTwoFifteenMention(normalized)) return "Thursday at 2:15 PM";
-  if (normalized.includes("thursday") && normalized.includes("morning")) return "Thursday morning";
-  if (normalized.includes("thursday") && normalized.includes("afternoon")) return "Thursday afternoon";
-  if (normalized.includes("thursday")) return "Thursday";
-  if (normalized.includes("friday") && (normalized.includes("morning") || normalized.includes("sometime") || normalized.includes("some time"))) return "Friday morning";
-  if (normalized.includes("tomorrow morning")) return "tomorrow morning";
-  return "";
+  return DOMAIN.inferSchedulingWindowFromText(text);
 }
 
 async function runClientSchedulingFallback(requestedWindow, stage, callId = null) {
-  if (!state.voiceVerified && callerMentionedAnyAcceptedVerificationValue()) {
-    state.voiceVerified = true;
-  }
+  await waitForServerVerification();
 
-  if (state.scenarioKey === "access" && !state.voiceVerified) {
+  if (state.scenarioKey === "access" && !hasSchedulingAuthorization()) {
     if (callId) {
       sendSchedulingFunctionOutputToRealtime(
         callId,
@@ -1111,14 +1161,12 @@ async function runClientSchedulingFallback(requestedWindow, stage, callId = null
   state.schedulingWindowsHandled.add(windowKey);
 
   const payload = {
-    scenario: scenario().label,
     scenario_key: state.scenarioKey,
-    patient_name: "Jordan Lee",
     requested_window: requestedWindow,
-    visit_type: "imaging",
-    facility: "Northlake Imaging Center",
     language_preference: state.liveConversationHints.languagePreference,
-    caregiver_context: state.liveConversationHints.caregiverContext
+    caregiver_context: state.liveConversationHints.caregiverContext,
+    demo_session_id: state.demoSessionId,
+    scheduling_capability: state.schedulingCapability
   };
 
   addMessage({
@@ -1134,14 +1182,20 @@ async function runClientSchedulingFallback(requestedWindow, stage, callId = null
 
   try {
     const startedAt = performance.now();
-    const response = await fetch("/api/demo-tools/confirm-appointment", {
+    const response = await fetchWithTimeout("/api/demo-tools/confirm-appointment", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
-    });
+    }, 8000);
     const result = await response.json();
     result.client_elapsed_ms = Math.round(performance.now() - startedAt);
-    if (!response.ok) throw new Error(result.error || "Scheduling tool failed.");
+    if (result.status === "validation_required") {
+      state.voiceVerified = false;
+      state.schedulingCapability = "";
+    }
+    if (!response.ok && result.status !== "validation_required") {
+      throw new Error(result.error || "Scheduling tool failed.");
+    }
 
     const resultText = formatSchedulingResult(result);
     addMessage({ who: "Scheduling system", type: "system", text: resultText });
@@ -1154,13 +1208,29 @@ async function runClientSchedulingFallback(requestedWindow, stage, callId = null
       );
     }
   } catch (error) {
-    addMessage({ who: "Scheduling system", type: "system", text: error.message || String(error) });
+    if (DEBUG_REALTIME) console.error("[scheduling-fallback]", error);
+    const result = {
+      status: "error",
+      message: "Scheduling is temporarily unavailable.",
+      next_action: "Route to staff queue."
+    };
+    addMessage({ who: "Scheduling system", type: "system", text: result.message });
+    if (callId) {
+      sendSchedulingFunctionOutputToRealtime(
+        callId,
+        result,
+        "Continue naturally and route this request to staff because scheduling is unavailable. Do not discuss implementation details."
+      );
+    }
   }
 }
 
 function schedulingFollowupInstructions(result) {
+  if (result.status === "validation_required") {
+    return "Ask for caller name and date of birth, then continue the scheduling workflow. Do not imply that availability was checked.";
+  }
   if (result.status === "options_found") {
-    return "Continue the call naturally. Offer the available scheduling options in plain language, recommend the best fit if helpful, and ask which slot works. Do not say anything is booked yet.";
+    return "Continue the call naturally. Offer the available scheduling options in plain language and ask which works. When the caller chooses, call the scheduling tool again with that option's exact window and slot_id. Do not say anything is booked yet.";
   }
   if (result.status === "needs_clarification") {
     return "Ask what day or time window works best before checking the scheduling system. Do not confirm or imply a slot is booked.";
@@ -1172,28 +1242,42 @@ function schedulingFollowupInstructions(result) {
 }
 
 function sendSchedulingFunctionOutputToRealtime(callId, result, instructions) {
-  if (!state.dataChannel || state.dataChannel.readyState === "closed") return;
+  if (!callId) return false;
+  if (!state.dataChannel || state.dataChannel.readyState !== "open") {
+    logRealtimeEvent({ type: "function-output-skipped", call_id: callId });
+    showToast("Scheduling result could not be returned because the voice channel closed.");
+    return false;
+  }
   const modelResult = toModelSchedulingResult(result);
-  state.dataChannel.send(JSON.stringify({
-    type: "conversation.item.create",
-    item: {
-      type: "function_call_output",
-      call_id: callId,
-      output: JSON.stringify(modelResult)
-    }
-  }));
-  state.dataChannel.send(JSON.stringify({
-    type: "response.create",
-    response: {
-      output_modalities: ["audio"],
-      instructions
-    }
-  }));
+  try {
+    state.dataChannel.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify(modelResult)
+      }
+    }));
+    state.dataChannel.send(JSON.stringify({
+      type: "response.create",
+      response: {
+        output_modalities: ["audio"],
+        instructions
+      }
+    }));
+    return true;
+  } catch (error) {
+    if (DEBUG_REALTIME) console.error("[function-output]", error);
+    showToast("Scheduling result could not be returned to the voice session.");
+    return false;
+  }
 }
 
 function toModelSchedulingResult(result) {
   return {
     status: result.status,
+    selected_slot_id: result.selected_slot_id,
+    alternate_slot_id: result.alternate_slot_id,
     patient_name: result.patient_name,
     requested_window: result.requested_window,
     alternate_window: result.alternate_window,
@@ -1287,12 +1371,21 @@ function formatSchedulingPacket(result) {
 }
 
 function stopRealtimeSession() {
-  state.dataChannel?.close();
-  state.peerConnection?.close();
-  state.localStream?.getTracks().forEach(track => track.stop());
-  state.remoteAudio?.pause();
-  state.remoteAudio?.remove();
+  if (state.stoppingRealtime) return;
+  state.stoppingRealtime = true;
+  const dataChannel = state.dataChannel;
+  const peerConnection = state.peerConnection;
+  const localStream = state.localStream;
+  const remoteAudio = state.remoteAudio;
   state.dataChannel = null;
+  state.peerConnection = null;
+  state.localStream = null;
+  state.remoteAudio = null;
+  dataChannel?.close();
+  peerConnection?.close();
+  localStream?.getTracks().forEach(track => track.stop());
+  remoteAudio?.pause();
+  remoteAudio?.remove();
   state.handledToolCalls = new Set();
   state.toolCallArgumentDeltas = new Map();
   state.toolCallNames = new Map();
@@ -1303,6 +1396,9 @@ function stopRealtimeSession() {
   state.schedulingWindowsHandled = new Set();
   state.voiceVerified = false;
   state.callerVerificationProvided = false;
+  state.demoSessionId = "";
+  state.schedulingCapability = "";
+  state.verificationPromise = null;
   state.liveConversationHints = { languagePreference: "", caregiverContext: "" };
   state.agentTranscriptBuffer = "";
   state.agentAudioTurnText = "";
@@ -1311,9 +1407,6 @@ function stopRealtimeSession() {
   state.callbackDriftCancelled = false;
   state.lastCallerTranscript = "";
   state.callerVerificationText = "";
-  state.peerConnection = null;
-  state.localStream = null;
-  state.remoteAudio = null;
   els.startRealtimeBtn.disabled = false;
   els.startRealtimeBtn.textContent = "Answer call";
   els.stopRealtimeBtn.disabled = true;
@@ -1322,7 +1415,8 @@ function stopRealtimeSession() {
   els.agentFace.classList.remove("is-live");
   if (els.orbLiveLabel) els.orbLiveLabel.textContent = isPatientView() ? "Tap mic to chat" : "Tap mic to answer";
   setSpeaking(false);
-  setConnectionState(state.realtimeAvailable ? "ready" : "idle", state.realtimeAvailable ? "Realtime-ready" : "Scripted mode");
+  setConnectionState(state.realtimeAvailable ? "ready" : "idle", state.realtimeAvailable ? "Configured" : "Scripted mode");
+  state.stoppingRealtime = false;
 }
 
 els.startBtn.addEventListener("click", runScriptedDemo);
@@ -1455,10 +1549,10 @@ const SITE_STATS = [
 ];
 
 const SITE_TRUST_BADGES = [
-  "Accredited care",
-  "Secure by design",
-  "PHI protected",
-  "Available in English & Spanish"
+  "Synthetic demo data",
+  "Server-side credentials",
+  "Human escalation",
+  "English & Spanish demo"
 ];
 
 const SITE_TILE_ICONS = {
@@ -1560,7 +1654,20 @@ function renderPortalPreview() {
   host.innerHTML = body ? `<div class="portal-card">${body}</div>` : "";
 }
 
-function setSitePage(key) {
+function updateSiteNavigation(key) {
+  if (!els.siteNav) return;
+  els.siteNav.querySelectorAll(".site-nav-link").forEach(button => {
+    const isActive = button.dataset.page === key;
+    button.classList.toggle("active", isActive);
+    if (isActive) {
+      button.setAttribute("aria-current", "page");
+    } else {
+      button.removeAttribute("aria-current");
+    }
+  });
+}
+
+function selectScenario(key) {
   if (!SITE_PAGES[key]) return;
   if (state.peerConnection) {
     stopRealtimeSession();
@@ -1571,9 +1678,11 @@ function setSitePage(key) {
   renderScenario();
   renderScenarioCards();
   renderSitePage();
-  if (els.siteNav) {
-    els.siteNav.querySelectorAll(".site-nav-link").forEach(b => b.classList.toggle("active", b.dataset.page === key));
-  }
+  updateSiteNavigation(key);
+}
+
+function setSitePage(key) {
+  selectScenario(key);
 }
 
 function setView(view) {
@@ -1581,6 +1690,11 @@ function setView(view) {
   els.body.dataset.view = view;
   if (els.viewSwitchState) els.viewSwitchState.textContent = view === "patient" ? "Patient view" : "Executive view";
   if (els.executiveApp) els.executiveApp.setAttribute("aria-hidden", view === "executive" ? "false" : "true");
+  if (els.patientApp) {
+    els.patientApp.setAttribute("aria-hidden", view === "patient" ? "false" : "true");
+    els.patientApp.inert = view !== "patient" ||
+      Boolean(els.assistantPanel?.classList.contains("open"));
+  }
   if (els.callerEyebrow) els.callerEyebrow.textContent = view === "patient" ? "Active user" : "Active caller";
   // Move the agent surface into the right slot
   const target = view === "patient" ? els.assistantSlot : els.executiveAgentSlot;
@@ -1609,8 +1723,17 @@ function openAssistantPanel() {
   // Re-render in case state changed while the panel was closed
   renderSignedInUser();
   renderPortalPreview();
+  state.lastFocusedElement = document.activeElement;
+  els.assistantPanel.inert = false;
   els.assistantPanel.classList.add("open");
   els.assistantPanel.setAttribute("aria-hidden", "false");
+  if (els.patientApp) els.patientApp.inert = true;
+  if (els.assistantFab) {
+    els.assistantFab.inert = true;
+    els.assistantFab.setAttribute("aria-expanded", "true");
+  }
+  if (els.viewSwitch) els.viewSwitch.inert = true;
+  if (els.assistantBackdrop) els.assistantBackdrop.hidden = false;
   const focusTarget = els.patientStartBtn || els.assistantPanelClose;
   if (focusTarget) {
     try { focusTarget.focus({ preventScroll: true }); } catch { focusTarget.focus(); }
@@ -1619,14 +1742,48 @@ function openAssistantPanel() {
 
 function closeAssistantPanel() {
   if (!els.assistantPanel) return;
+  const wasOpen = els.assistantPanel.classList.contains("open");
   if (state.peerConnection) {
     stopRealtimeSession();
     showToast("Conversation ended.");
   }
   els.assistantPanel.classList.remove("open");
   els.assistantPanel.setAttribute("aria-hidden", "true");
+  els.assistantPanel.inert = true;
+  if (els.patientApp) els.patientApp.inert = els.body.dataset.view !== "patient";
   if (els.assistantFab) {
-    try { els.assistantFab.focus({ preventScroll: true }); } catch { els.assistantFab.focus(); }
+    els.assistantFab.inert = false;
+    els.assistantFab.setAttribute("aria-expanded", "false");
+  }
+  if (els.viewSwitch) els.viewSwitch.inert = false;
+  if (els.assistantBackdrop) els.assistantBackdrop.hidden = true;
+  const focusTarget = state.lastFocusedElement?.isConnected
+    ? state.lastFocusedElement
+    : els.assistantFab;
+  state.lastFocusedElement = null;
+  if (wasOpen && focusTarget) {
+    try { focusTarget.focus({ preventScroll: true }); } catch { focusTarget.focus(); }
+  }
+}
+
+function trapAssistantPanelFocus(event) {
+  if (event.key !== "Tab" || !els.assistantPanel?.classList.contains("open")) return;
+  const focusable = [...els.assistantPanel.querySelectorAll(
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  )].filter(element => !element.inert && element.getClientRects().length > 0);
+  if (focusable.length === 0) {
+    event.preventDefault();
+    els.assistantPanel.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
   }
 }
 
@@ -1635,7 +1792,9 @@ els.executiveApp = els.executiveApp || document.getElementById("executiveApp");
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && els.assistantPanel && els.assistantPanel.classList.contains("open")) {
     closeAssistantPanel();
+    return;
   }
+  trapAssistantPanelFocus(event);
 });
 
 if (els.viewSwitch) {
@@ -1653,6 +1812,7 @@ if (els.assistantFab) els.assistantFab.addEventListener("click", () => {
   openAssistantPanel();
 });
 if (els.assistantPanelClose) els.assistantPanelClose.addEventListener("click", closeAssistantPanel);
+if (els.assistantBackdrop) els.assistantBackdrop.addEventListener("click", closeAssistantPanel);
 if (els.patientStartBtn) els.patientStartBtn.addEventListener("click", startRealtimeSession);
 if (els.patientStopBtn) els.patientStopBtn.addEventListener("click", stopRealtimeSession);
 

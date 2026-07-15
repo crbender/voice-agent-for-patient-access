@@ -1,4 +1,10 @@
-window.SYNTHETIC_KNOWLEDGE = {
+"use strict";
+
+(function initSyntheticKnowledge(root, factory) {
+  const knowledge = factory();
+  if (typeof module === "object" && module.exports) module.exports = knowledge;
+  if (root) root.SYNTHETIC_KNOWLEDGE = knowledge;
+})(typeof window !== "undefined" ? window : null, () => ({
   shared: {
     persona: {
       agentName: "Riley",
@@ -327,4 +333,4 @@ window.SYNTHETIC_KNOWLEDGE = {
       "Handoff state: language services-ready"
     ]
   }
-};
+}));

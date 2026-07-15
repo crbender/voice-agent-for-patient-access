@@ -21,13 +21,8 @@ const path = require("path");
 
 const ROOT = __dirname;
 
-// Load browser-targeted files by mocking window/global
-global.window = {};
-eval(fs.readFileSync(path.join(ROOT, "scenarios.js"), "utf8"));        // sets window.DEMO_SCENARIOS
-eval(fs.readFileSync(path.join(ROOT, "synthetic-data.js"), "utf8"));   // sets window.SYNTHETIC_KNOWLEDGE
-
-const SCENARIOS = window.DEMO_SCENARIOS;
-const KNOWLEDGE = window.SYNTHETIC_KNOWLEDGE;
+const SCENARIOS = require(path.join(ROOT, "scenarios.js"));
+const KNOWLEDGE = require(path.join(ROOT, "synthetic-data.js"));
 
 // ---------------------------------------------------------------------------
 // Helpers

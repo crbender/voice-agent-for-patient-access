@@ -5,68 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Voice Agent for Patient Access</title>
   <link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="16" fill="%23b11f4b"/><path d="M32 12a11 11 0 0 0-11 11v12a11 11 0 0 0 22 0V23A11 11 0 0 0 32 12Z" fill="none" stroke="white" stroke-width="5"/><path d="M16 32v3a16 16 0 0 0 32 0v-3M32 51v8M25 59h14" fill="none" stroke="white" stroke-width="5" stroke-linecap="round"/></svg>' />
-  <script>
-    (() => {
-      const param = new URLSearchParams(window.location.search).get("theme");
-      const theme =
-        param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-      document.documentElement.setAttribute("data-theme", theme);
-    })();
-  </script>
-  <style>
-    :root {
-      color-scheme: light;
-      --cp-bg: #f7f4ef;
-      --cp-bg-elevated: #fcfbf8;
-      --cp-surface: #ffffff;
-      --cp-surface-soft: #f5f5f5;
-      --cp-border: #dedede;
-      --cp-border-strong: #919191;
-      --cp-text: #242424;
-      --cp-text-muted: #5c5c5c;
-      --cp-text-soft: #6f6f6f;
-      --cp-accent: #b11f4b;
-      --cp-accent-hover: #9a1a41;
-      --cp-accent-soft: rgba(177, 31, 75, 0.08);
-      --cp-accent-fg: #ffffff;
-      --cp-success: #16a34a;
-      --cp-danger: #dc2626;
-      --cp-warning: #f59e0b;
-      --cp-link: #0078d4;
-      --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.12);
-      --cp-overlay: rgba(255, 255, 255, 0.8);
-      --cp-panel: rgba(255, 255, 255, 0.86);
-      --cp-panel-strong: rgba(255, 255, 255, 0.96);
-      --cp-sheen: rgba(255, 255, 255, 0.55);
-      --cp-highlight: rgba(177, 31, 75, 0.12);
-    }
-    html[data-theme="dark"] {
-      color-scheme: dark;
-      --cp-bg: #3d3b3a;
-      --cp-bg-elevated: #343231;
-      --cp-surface: #292929;
-      --cp-surface-soft: #2e2e2e;
-      --cp-border: #474747;
-      --cp-border-strong: #5f5f5f;
-      --cp-text: #dedede;
-      --cp-text-muted: #919191;
-      --cp-text-soft: #b0b0b0;
-      --cp-accent: #fd8ea1;
-      --cp-accent-hover: #fb7b91;
-      --cp-accent-soft: rgba(253, 142, 161, 0.14);
-      --cp-accent-fg: #1a1a1a;
-      --cp-success: #4ade80;
-      --cp-danger: #f87171;
-      --cp-warning: #fbbf24;
-      --cp-link: #4da6ff;
-      --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
-      --cp-overlay: rgba(41, 41, 41, 0.88);
-      --cp-panel: rgba(41, 41, 41, 0.72);
-      --cp-panel-strong: rgba(41, 41, 41, 0.96);
-      --cp-sheen: rgba(255, 255, 255, 0.04);
-      --cp-highlight: rgba(253, 142, 161, 0.12);
-    }
-  </style>
+  <script src="./theme.js"></script>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body data-view="patient">
@@ -148,7 +87,7 @@
     </footer>
   </div>
 
-  <button class="assistant-fab" id="assistantFab" type="button" aria-label="Talk to a virtual assistant">
+  <button class="assistant-fab" id="assistantFab" type="button" aria-label="Talk to a virtual assistant" aria-controls="assistantPanel" aria-expanded="false">
     <span class="assistant-fab-icon" aria-hidden="true">
       <svg viewBox="0 0 24 24" fill="none">
         <path d="M12 3a4 4 0 0 0-4 4v5a4 4 0 0 0 8 0V7a4 4 0 0 0-4-4Z" stroke="currentColor" stroke-width="2"/>
@@ -161,7 +100,9 @@
     </span>
   </button>
 
-  <aside class="assistant-panel" id="assistantPanel" role="dialog" aria-modal="true" aria-labelledby="assistantPanelTitle" aria-hidden="true">
+  <div class="assistant-backdrop" id="assistantBackdrop" hidden></div>
+
+  <aside class="assistant-panel" id="assistantPanel" role="dialog" aria-modal="true" aria-labelledby="assistantPanelTitle" aria-hidden="true" inert>
     <header class="assistant-panel-header">
       <div>
         <span class="eyebrow">Northlake Health · Virtual assistant</span>
@@ -296,7 +237,7 @@
               </div>
             </div>
 
-            <div class="transcript" id="transcript" aria-live="polite"></div>
+            <div class="transcript" id="transcript" role="log" aria-live="polite" aria-relevant="additions text"></div>
             </div>
           </div>
 
@@ -386,6 +327,7 @@
 
   <script src="./scenarios.js"></script>
   <script src="./synthetic-data.js"></script>
+  <script src="./demo-domain.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

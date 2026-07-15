@@ -34,3 +34,15 @@ Spec-driven rule: update `spec.md`, `plan.md`, and `tasks.md` before implementat
 30. Showcase `gpt-realtime-2` with interruptible bilingual adaptation, stress-aware acknowledgement, two-step scheduling-system tool use, and a richer care access packet.
 31. Make live voice mode intent-driven for public reuse: acknowledge signed-in MyHealth context, require voice-channel verification before any request handling, appointment-specific details, tool use, or action packets, allow confirmation/access-question/reschedule paths after verification, and keep the scripted run-of-show as examples rather than a required script.
 32. Perform publish-readiness hygiene: ignore local presentation exports, document pre-publish secret checks, keep realtime diagnostics opt-in, and verify ignored local artifacts are not tracked.
+33. Replace unrestricted repository-root serving with a GET/HEAD public asset allowlist, correct MIME types, API no-store behavior, CSP/security headers, bounded JSON parsing, and localhost/127.0.0.1 origin validation.
+34. Extract DOM-free browser domain helpers and require active-profile name plus date of birth; remove single-factor, cross-persona, and assistant-wording verification bypasses.
+35. Replace substring scheduling confirmation with canonical slot IDs, exact allowlisted windows, explicit negation/ambiguity handling, and server-owned patient/facility/visit context.
+36. Scope Realtime grounding to the active profile, use server-owned scenario policy metadata, remove arbitrary prompt truncation, and enforce an explicit measured payload limit.
+37. Route both scenario selectors through one state transition and harden Realtime timeouts, disconnect cleanup, data-channel error output, and tool-watchdog behavior.
+38. Make the assistant panel an accessible modal, correct its grid layout, add focus and ARIA state, honor reduced motion, and externalize inline theme assets for CSP.
+39. Replace generator `eval` loading with browser/CommonJS-compatible exports and make screenshot startup shell-free, repository-root aware, and non-blocking when Playwright is absent.
+40. Add Python and Node regression tests plus CI syntax/test checks.
+41. Align scripted revenue and multilingual flows with verification-before-disclosure and add current Azure Voice Live, Azure Realtime WebRTC, and May 7, 2026 OpenAI voice source anchors.
+42. Enforce scheduling verification on the local server with bounded transcript validation, opaque Realtime-session IDs, expiring session-bound capabilities, HTTP regression tests, and connection-close handling for oversized unread bodies.
+43. Add UI proof screenshots and organize the pull-request description by server, browser, UI, and validation scopes.
+44. Clear verified state and accumulated verification evidence when a scheduling capability expires, and prove through HTTP regression coverage that renewal requires both factors again.
