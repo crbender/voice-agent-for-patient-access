@@ -65,7 +65,7 @@ AZURE_OPENAI_AUTH_MODE=entra
 
 # still required; use the endpoint shown on your Azure resource
 AZURE_OPENAI_ENDPOINT=https://YOUR-RESOURCE.openai.azure.com
-AZURE_OPENAI_REALTIME_DEPLOYMENT=gpt-realtime-2
+AZURE_OPENAI_REALTIME_DEPLOYMENT=gpt-realtime-2.1
 ```
 
 Suggested Python dependencies:

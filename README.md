@@ -114,25 +114,42 @@ cp .env.example .env
 2. Set required values in `.env`:
 
 ```bash
-AZURE_OPENAI_ENDPOINT=https://YOUR-ENDPOINT.cognitiveservices.azure.com
-AZURE_OPENAI_REALTIME_DEPLOYMENT=gpt-realtime-2
+AZURE_OPENAI_ENDPOINT=https://YOUR-RESOURCE.openai.azure.com
+AZURE_OPENAI_REALTIME_DEPLOYMENT=gpt-realtime-2.1
 AZURE_OPENAI_API_KEY=PASTE-YOUR-KEY-HERE
-AZURE_OPENAI_REALTIME_VOICE=alloy
+AZURE_OPENAI_REALTIME_VOICE=marin
 AZURE_OPENAI_REALTIME_PROTOCOL=ga-webrtc
 AZURE_OPENAI_REALTIME_REGION=eastus2
 AZURE_OPENAI_REALTIME_API_VERSION=2025-04-01-preview
 # Azure may require this to be the name of an existing transcription model deployment.
 REALTIME_TRANSCRIPTION_MODEL=whisper-1
+# gpt-realtime-2.1 reasoning: minimal | low | medium | high (low suits live voice).
+REALTIME_REASONING_EFFORT=low
+# Silence before the model takes its turn. Lower feels snappier; raise in noisy rooms.
+REALTIME_VAD_SILENCE_MS=700
 PORT=8787
 # Optional: generate ignored conversation-script.md on server startup.
 GENERATE_CONVERSATION_SCRIPT=0
 ```
 
+`AZURE_OPENAI_ENDPOINT` must be the **base resource origin**, not the realtime WebSocket URL shown in the Foundry playground. If you paste `wss://YOUR-RESOURCE.openai.azure.com/openai/v1/realtime?model=...`, the server normalizes it to `https://YOUR-RESOURCE.openai.azure.com` and reports `endpointNormalized` on the status endpoint.
+
 3. Restart server and refresh browser.
 
 The right panel should show Realtime voice configured.
 
-The primary live voice path now targets `gpt-realtime-2` with GA WebRTC. The older `legacy-webrtc` path remains in the code only as a fallback for previous `gpt-realtime-1.5` deployments.
+The primary live voice path now targets the `gpt-realtime-2.1` deployment with GA WebRTC. The deployment uses model version `2026-07-07` and the Global Standard tier shown in the Foundry deployment details. The older `legacy-webrtc` path remains in the code only as a fallback for previous `gpt-realtime-1.5` deployments.
+
+### Tuning gpt-realtime-2.1
+
+`gpt-realtime-2.1` is a reasoning voice model, so the session is configured for it explicitly:
+
+- `REALTIME_REASONING_EFFORT` defaults to `low`, the recommended starting point for responsive voice agents. Raise it only if scheduling or escalation decisions need more deliberation.
+- `AZURE_OPENAI_REALTIME_VOICE` defaults to `marin`, this model's native default. `alloy`, `cedar`, `sage`, `shimmer`, and `verse` are also available.
+- `REALTIME_VAD_SILENCE_MS` defaults to `700`, which keeps turn-taking brisk on camera. Raise it toward `1000` in noisy rooms.
+- The model emits short spoken preambles (for example, "I'll check the scheduling system for Thursday") before tool calls. This is expected behavior and covers scheduling latency.
+
+The server builds one authoritative session object that both mints the client secret and drives the browser `session.update`, so audio, turn detection, tools, and reasoning cannot drift apart. `model` and `reasoning` are deliberately excluded from the browser `session.update`, because the Realtime service only accepts them when the session is created and otherwise returns `Unsupported option for this model.`
 
 The GA WebRTC path uses `/openai/v1/realtime/client_secrets` for short-lived session credentials and `/openai/v1/realtime/calls` for the browser SDP exchange. The local demo keeps the data-channel event stream unfiltered so the browser can receive Realtime function-call events and return `function_call_output` for the scheduling tool.
 

@@ -2,14 +2,17 @@
 """Local demo server with a server-side Azure OpenAI Realtime token service.
 
 Environment variables, automatically loaded from .env when present:
-  AZURE_OPENAI_ENDPOINT             Example: https://my-resource.cognitiveservices.azure.com
+  AZURE_OPENAI_ENDPOINT             Base resource origin, for example https://my-resource.openai.azure.com
+                                    A pasted wss:// realtime URL is normalized down to this origin.
   AZURE_OPENAI_API_KEY              API key for your personal demo resource; never sent to the browser
-  AZURE_OPENAI_REALTIME_DEPLOYMENT  Example: gpt-realtime-2
-  AZURE_OPENAI_REALTIME_VOICE       Optional, defaults to alloy
+  AZURE_OPENAI_REALTIME_DEPLOYMENT  Example: gpt-realtime-2.1
+  AZURE_OPENAI_REALTIME_VOICE       Optional, defaults to marin
   AZURE_OPENAI_REALTIME_PROTOCOL    Optional: ga-webrtc or legacy-webrtc
   AZURE_OPENAI_REALTIME_REGION      Required for legacy-webrtc, defaults to eastus2
   AZURE_OPENAI_REALTIME_API_VERSION Optional legacy sessions API version
   REALTIME_TRANSCRIPTION_MODEL      Optional, defaults to whisper-1
+  REALTIME_REASONING_EFFORT         Optional gpt-realtime-2.1 reasoning: minimal|low|medium|high, defaults to low
+  REALTIME_VAD_SILENCE_MS           Optional end-of-turn silence in ms, defaults to 700
   PORT                              Optional, defaults to 8787
 """
 
@@ -19,12 +22,18 @@ import os
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parent
 
+# Keep the scheduling stub visibly real without padding demo latency.
+MOCK_SCHEDULING_DELAY_SECONDS = 0.7
+MOCK_SCHEDULING_LATENCY_MS = int(MOCK_SCHEDULING_DELAY_SECONDS * 1000)
+
 SUPPORTED_REALTIME_MODELS = (
+    "gpt-realtime-2.1",
     "gpt-realtime-2",
     "gpt-realtime",
     "gpt-realtime-mini",
@@ -103,18 +112,50 @@ def load_dotenv():
             os.environ[key] = value
 
 
+def normalize_endpoint(raw_endpoint):
+    """Reduce a pasted Azure endpoint to the base https origin.
+
+    Foundry surfaces a realtime WebSocket URL such as
+    wss://my-resource.openai.azure.com/openai/v1/realtime?model=gpt-realtime-2.1,
+    but the token service must call https://my-resource.openai.azure.com.
+    """
+    endpoint = str(raw_endpoint or "").strip().strip('"').strip("'")
+    if not endpoint:
+        return ""
+    if endpoint.startswith("wss://"):
+        endpoint = "https://" + endpoint[len("wss://"):]
+    elif endpoint.startswith("ws://"):
+        endpoint = "http://" + endpoint[len("ws://"):]
+    elif "://" not in endpoint:
+        endpoint = "https://" + endpoint
+    parsed = urlsplit(endpoint)
+    if not parsed.netloc:
+        return endpoint.rstrip("/")
+    return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+
+
 def realtime_config():
-    endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
-    deployment = os.environ.get("AZURE_OPENAI_REALTIME_DEPLOYMENT", "gpt-realtime-2")
+    raw_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+    endpoint = normalize_endpoint(raw_endpoint)
+    endpoint_normalized = bool(raw_endpoint.strip()) and endpoint != raw_endpoint.strip().rstrip("/")
+    deployment = os.environ.get("AZURE_OPENAI_REALTIME_DEPLOYMENT", "gpt-realtime-2.1")
     api_key = os.environ.get("AZURE_OPENAI_API_KEY", "")
-    voice = os.environ.get("AZURE_OPENAI_REALTIME_VOICE", "alloy")
+    voice = os.environ.get("AZURE_OPENAI_REALTIME_VOICE", "marin")
     protocol = os.environ.get("AZURE_OPENAI_REALTIME_PROTOCOL", "ga-webrtc")
     region = os.environ.get("AZURE_OPENAI_REALTIME_REGION", "eastus2").lower().replace(" ", "")
     api_version = os.environ.get("AZURE_OPENAI_REALTIME_API_VERSION", "2025-04-01-preview")
     transcription_model = os.environ.get("REALTIME_TRANSCRIPTION_MODEL", "whisper-1")
+    reasoning_effort = os.environ.get("REALTIME_REASONING_EFFORT", "low").strip().lower()
+    if reasoning_effort in ("", "none", "off"):
+        reasoning_effort = ""
+    try:
+        vad_silence_ms = int(os.environ.get("REALTIME_VAD_SILENCE_MS", "700"))
+    except ValueError:
+        vad_silence_ms = 700
     configured = bool(endpoint and api_key and deployment)
     return {
         "endpoint": endpoint,
+        "endpoint_normalized": endpoint_normalized,
         "deployment": deployment,
         "api_key": api_key,
         "voice": voice,
@@ -122,6 +163,8 @@ def realtime_config():
         "region": region,
         "api_version": api_version,
         "transcription_model": transcription_model,
+        "reasoning_effort": reasoning_effort,
+        "vad_silence_ms": vad_silence_ms,
         "configured": configured,
         "supported_models": SUPPORTED_REALTIME_MODELS,
     }
@@ -285,37 +328,57 @@ def build_realtime_instructions(request_body):
     ).strip()
 
 
-def request_ga_realtime_client_secret(cfg, request_body, instructions):
-    url = f"{cfg['endpoint']}/openai/v1/realtime/client_secrets"
-    session_config = {
-        "session": {
-            "type": "realtime",
-            "model": cfg["deployment"],
-            "instructions": instructions,
-            "output_modalities": ["audio"],
-            "audio": {
-                "input": {
-                    "transcription": {"model": cfg["transcription_model"]},
-                    "turn_detection": {
-                        "type": "server_vad",
-                        "threshold": 0.35,
-                        "prefix_padding_ms": 500,
-                        "silence_duration_ms": 1050,
-                        "create_response": True,
-                    },
-                },
-                "output": {
-                    "voice": cfg["voice"],
+def build_realtime_session(cfg, request_body, instructions):
+    """Build the authoritative Realtime session config.
+
+    The same object mints the client secret and drives the browser session.update,
+    so audio, turn-taking, reasoning, and tool config cannot drift apart.
+    """
+    session = {
+        "type": "realtime",
+        "model": cfg["deployment"],
+        "instructions": instructions,
+        "output_modalities": ["audio"],
+        "audio": {
+            "input": {
+                "transcription": {"model": cfg["transcription_model"]},
+                "turn_detection": {
+                    "type": "server_vad",
+                    "threshold": 0.35,
+                    "prefix_padding_ms": 500,
+                    "silence_duration_ms": cfg["vad_silence_ms"],
+                    "create_response": True,
                 },
             },
-        }
+            "output": {
+                "voice": cfg["voice"],
+            },
+        },
     }
+    if cfg["reasoning_effort"]:
+        session["reasoning"] = {"effort": cfg["reasoning_effort"]}
     if is_patient_access_request(request_body):
-        session_config["session"]["tools"] = [SCHEDULING_TOOL]
-        session_config["session"]["tool_choice"] = "auto"
+        session["tools"] = [SCHEDULING_TOOL]
+        session["tool_choice"] = "auto"
+    return session
+
+
+def build_browser_session_update(session):
+    """Strip fields that cannot be changed on an already-established session.
+
+    `model` and `reasoning` are accepted when minting the client secret, but the
+    Realtime service rejects them on a session.update with
+    "Unsupported option for this model."
+    """
+    immutable = {"model", "reasoning"}
+    return {key: value for key, value in session.items() if key not in immutable}
+
+
+def request_ga_realtime_client_secret(cfg, session):
+    url = f"{cfg['endpoint']}/openai/v1/realtime/client_secrets"
     req = Request(
         url,
-        data=json.dumps(session_config).encode("utf-8"),
+        data=json.dumps({"session": session}).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
             "api-key": cfg["api_key"],
@@ -357,13 +420,13 @@ def mock_confirm_appointment_reschedule(request_body):
     normalized_scenario = scenario.lower()
     normalized_window = requested_window.lower()
 
-    time.sleep(1.4)
+    time.sleep(MOCK_SCHEDULING_DELAY_SECONDS)
 
     if scenario_key != "access" and normalized_scenario != "patient access":
         return {
             "status": "unsupported",
             "mock": True,
-            "mock_latency_ms": 1400,
+            "mock_latency_ms": MOCK_SCHEDULING_LATENCY_MS,
             "message": "Scheduling system is not available for this request.",
             "next_action": "Route this request to the appropriate staff queue.",
         }
@@ -372,7 +435,7 @@ def mock_confirm_appointment_reschedule(request_body):
         return {
             "status": "needs_clarification",
             "mock": True,
-            "mock_latency_ms": 1400,
+            "mock_latency_ms": MOCK_SCHEDULING_LATENCY_MS,
             "patient_name": patient_name,
             "requested_window": "",
             "visit_type": visit_type,
@@ -399,7 +462,7 @@ def mock_confirm_appointment_reschedule(request_body):
             return {
                 "status": "confirmed",
                 "mock": True,
-                "mock_latency_ms": 1400,
+                "mock_latency_ms": MOCK_SCHEDULING_LATENCY_MS,
                 "confirmation_number": "NLH-48291",
                 "patient_name": patient_name,
                 "requested_window": requested_window,
@@ -426,7 +489,7 @@ def mock_confirm_appointment_reschedule(request_body):
         return {
             "status": "alternate_proposed",
             "mock": True,
-            "mock_latency_ms": 1400,
+            "mock_latency_ms": MOCK_SCHEDULING_LATENCY_MS,
             "patient_name": patient_name,
             "requested_window": requested_window or "early Friday morning",
             "alternate_window": "Friday at 11:30 AM",
@@ -470,7 +533,7 @@ def mock_confirm_appointment_reschedule(request_body):
         return {
             "status": "options_found",
             "mock": True,
-            "mock_latency_ms": 1400,
+            "mock_latency_ms": MOCK_SCHEDULING_LATENCY_MS,
             "patient_name": patient_name,
             "requested_window": requested_window or "available options",
             "available_slots": slots,
@@ -487,7 +550,7 @@ def mock_confirm_appointment_reschedule(request_body):
     return {
         "status": "needs_clarification",
         "mock": True,
-        "mock_latency_ms": 1400,
+        "mock_latency_ms": MOCK_SCHEDULING_LATENCY_MS,
         "patient_name": patient_name,
         "requested_window": requested_window,
         "visit_type": visit_type,
@@ -524,7 +587,7 @@ class DemoHandler(SimpleHTTPRequestHandler):
         except json.JSONDecodeError:
             return {"error": raw}
 
-        if code.lower() == "opperationnotsupported" or "does not work with the specified model" in message:
+        if code.lower() == "operationnotsupported" or "does not work with the specified model" in message:
             payload["guidance"] = (
                 "This deployment is not a Realtime speech-in/speech-out model. "
                 "Deploy one of: " + ", ".join(SUPPORTED_REALTIME_MODELS) + ". "
@@ -542,6 +605,9 @@ class DemoHandler(SimpleHTTPRequestHandler):
                 "deployment": cfg["deployment"],
                 "voice": cfg["voice"],
                 "transcriptionModel": cfg["transcription_model"],
+                "reasoningEffort": cfg["reasoning_effort"],
+                "vadSilenceMs": cfg["vad_silence_ms"],
+                "endpointNormalized": cfg["endpoint_normalized"],
                 "protocol": cfg["protocol"],
                 "region": cfg["region"],
                 "auth": "server-side API key" if cfg["api_key"] else "not configured",
@@ -571,6 +637,7 @@ class DemoHandler(SimpleHTTPRequestHandler):
         try:
             request_body = self._read_json_body()
             instructions = build_realtime_instructions(request_body)
+            session_update = None
             if cfg["protocol"] == "legacy-webrtc":
                 data = request_legacy_realtime_session(cfg)
                 ephemeral_token = data.get("client_secret", {}).get("value")
@@ -580,10 +647,12 @@ class DemoHandler(SimpleHTTPRequestHandler):
                 )
                 session_id = data.get("id")
             else:
-                data = request_ga_realtime_client_secret(cfg, request_body, instructions)
+                session = build_realtime_session(cfg, request_body, instructions)
+                data = request_ga_realtime_client_secret(cfg, session)
                 ephemeral_token = data.get("value")
                 calls_url = f"{cfg['endpoint']}/openai/v1/realtime/calls"
                 session_id = data.get("id")
+                session_update = build_browser_session_update(session)
 
             if not ephemeral_token:
                 self._json(502, {"error": "Azure did not return a realtime client secret."})
@@ -594,9 +663,11 @@ class DemoHandler(SimpleHTTPRequestHandler):
                 "deployment": cfg["deployment"],
                 "voice": cfg["voice"],
                 "transcriptionModel": cfg["transcription_model"],
+                "reasoningEffort": cfg["reasoning_effort"],
                 "protocol": cfg["protocol"],
                 "sessionId": session_id,
                 "instructions": instructions,
+                "sessionUpdate": session_update,
                 "tools": [SCHEDULING_TOOL] if cfg["protocol"] != "legacy-webrtc" and is_patient_access_request(request_body) else [],
                 "expiresAt": data.get("expires_at") or data.get("expiresAt"),
             })

@@ -12,12 +12,12 @@ As an executive demo producer, I want a 90-second browser demo that makes an AI 
 - The artifact must include source/citation anchors for Azure Voice Live API and the May 7, 2026 OpenAI voice announcement.
 - The artifact must distinguish mocked demo behavior from production integration points.
 - The live voice path must keep long-lived Azure OpenAI credentials server-side and expose only short-lived Realtime client secrets to the browser.
-- The primary live voice path must use a `gpt-realtime-2` Azure OpenAI Realtime deployment over the GA WebRTC protocol.
+- The primary live voice path must use a `gpt-realtime-2.1` Azure OpenAI Realtime deployment over the GA WebRTC protocol.
 - The live voice path must demonstrate an actual Realtime tool-call loop with a local mock scheduling tool. The mock scheduling system must deterministically confirm available slots by scenario or return a nearby alternate time when a requested slot is unavailable.
 - The patient-access workflow must attempt automated mock rescheduling first and use a callback task only when the mock scheduling system cannot complete the request or the request requires human judgment.
 - Caller-facing conversation, transcript, and action-packet status must use realistic "scheduling system" language and must not say mock, demo, stub, fake, synthetic, or simulated.
 - The model should use light, context-aware small talk where appropriate, including bilingual English-first then Spanish-second responses when the caller asks for a Spanish-speaking family member to follow along.
-- The patient-access showcase should demonstrate gpt-realtime-2 strengths with interruption handling, bilingual adaptation, stress-aware acknowledgement, a two-step scheduling-system tool flow, and a structured care access packet.
+- The patient-access showcase should demonstrate gpt-realtime-2.1 strengths with interruption handling, bilingual adaptation, stress-aware acknowledgement, a two-step scheduling-system tool flow, and a structured care access packet.
 - The Realtime model instructions must sound like a production hospital contact-center agent, not a generic AI assistant or loose demo narrator.
 - The public repository must include guardrails that prevent accidental publication of local `.env` files.
 
@@ -41,7 +41,7 @@ As an executive demo producer, I want a 90-second browser demo that makes an AI 
 10. Provide architecture and trust panels that can be shown on camera.
 11. Copy/export a LinkedIn-ready CTA or talk track.
 12. Ground live model responses with scenario prompt, talk track, approved demo knowledge pack, signed-in portal profile, and example run-of-show turns for tone. The live model should be intent-driven rather than script-locked.
-13. Support Azure OpenAI Realtime via a local Python token service, with `gpt-realtime-2` and GA WebRTC as the primary path. Preserve preview/legacy WebRTC only as a fallback for older `gpt-realtime-1.5` deployments.
+13. Support Azure OpenAI Realtime via a local Python token service, with `gpt-realtime-2.1` and GA WebRTC as the primary path. Preserve preview/legacy WebRTC only as a fallback for older `gpt-realtime-1.5` deployments.
 14. All live voice interactions require quick voice-channel verification even when the user is signed in to the portal. The agent may acknowledge the MyHealth sign-in, but must not disclose appointment-specific details, answer account-specific questions, use tools, or prepare an action packet until it asks for the caller's name and date of birth and receives a matching demo response. Use masked confirmation ("thanks, that matches") and never repeat a full date of birth back. After verification, the agent may greet by first name and reference the upcoming appointment, recent statement, or language preference.
 15. Include approved facility addresses, parking/location notes, and simple imaging-center FAQ answers so the agent can handle routine location questions.
 

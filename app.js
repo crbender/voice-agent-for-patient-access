@@ -14,7 +14,6 @@ const state = {
   schedulingFallbacks: new Set(),
   schedulingWindowsHandled: new Set(),
   voiceVerified: false,
-  callerVerificationProvided: false,
   liveConversationHints: {
     languagePreference: "",
     caregiverContext: ""
@@ -26,6 +25,14 @@ const state = {
   callbackDriftCancelled: false,
   lastCallerTranscript: "",
   callerVerificationText: "",
+  // Realtime response lifecycle, used to avoid colliding scheduling follow-ups.
+  activeResponseId: null,
+  pendingSchedulingFollowup: null,
+  inFlightFollowups: new Map(),
+  sentFollowupCallIds: new Set(),
+  sentToolOutputCallIds: new Set(),
+  followupSeq: 0,
+  realtimeSessionGeneration: 0,
   localStream: null,
   remoteAudio: null,
   realtimeEventLog: [],
@@ -47,6 +54,8 @@ const AVATAR_AGENT = '<svg viewBox="0 0 24 24" fill="none"><path d="M5 11a7 7 0 
 const AVATAR_SYSTEM = '<svg viewBox="0 0 24 24" fill="none"><path d="M12 3l9 5-9 5-9-5 9-5z" stroke="currentColor" stroke-width="1.8"/><path d="M3 13l9 5 9-5" stroke="currentColor" stroke-width="1.8"/></svg>';
 
 const SCHEDULING_TOOL_NAME = "confirm_appointment_reschedule";
+// Reasoning-capable models emit tool arguments more slowly; only fall back after a real stall.
+const TOOL_CALL_WATCHDOG_MS = 4000;
 const DEBUG_REALTIME = new URLSearchParams(window.location.search).has("debugRealtime") ||
   window.localStorage?.getItem("voiceDemoDebug") === "1";
 
@@ -614,7 +623,7 @@ async function startRealtimeSession() {
       showToast("Riley is ready.");
       dataChannel.send(JSON.stringify({
         type: "session.update",
-        session: {
+        session: sessionData.sessionUpdate || {
           type: "realtime",
           instructions: sessionData.instructions,
           tools: sessionData.tools || [],
@@ -627,11 +636,11 @@ async function startRealtimeSession() {
                 type: "server_vad",
                 threshold: 0.35,
                 prefix_padding_ms: 500,
-                silence_duration_ms: 1050,
+                silence_duration_ms: 700,
                 create_response: true
               }
             },
-            output: { voice: sessionData.voice || "alloy" }
+            output: { voice: sessionData.voice || "marin" }
           }
         }
       }));
@@ -694,13 +703,8 @@ function handleRealtimeEvent(rawMessage) {
     updateLiveConversationHints(event.transcript);
   }
   if (event.type === "response.output_audio_transcript.done" && event.transcript) {
-    const agentText = event.transcript;
-    state.agentAudioSegments.push(agentText);
-    updateLiveStateFromAgentText(agentText);
+    state.agentAudioSegments.push(event.transcript);
     state.callbackDriftCancelled = false;
-  }
-  if (event.type === "response.output_text.done" && event.text) {
-    updateLiveStateFromAgentText(event.text);
   }
   if (event.type === "response.output_audio_transcript.delta" && event.delta) {
     state.agentTranscriptBuffer += event.delta;
@@ -720,10 +724,36 @@ function handleRealtimeEvent(rawMessage) {
     flushAgentAudioTurn();
     setSpeaking(false);
   }
-  if (event.type === "error" && event.error?.message) {
-    addMessage({ who: "Realtime error", type: "system", text: event.error.message });
+  if (event.type === "response.created") {
+    state.activeResponseId = event.response?.id || "active";
+  }
+  if (event.type === "response.done") {
+    state.activeResponseId = null;
+    flushPendingSchedulingFollowup();
+  }
+  if (event.type === "error") {
+    handleRealtimeErrorEvent(event);
   }
   maybeHandleRealtimeToolCall(event);
+}
+
+// A rejected scheduling follow-up is only silent when we actually requeue it.
+// Every other failure stays visible.
+function handleRealtimeErrorEvent(event) {
+  const causeEventId = event.error?.event_id || event.event_id;
+  const rejectedFollowup = causeEventId ? state.inFlightFollowups.get(causeEventId) : null;
+  if (causeEventId) state.inFlightFollowups.delete(causeEventId);
+
+  if (rejectedFollowup && event.error?.code === "conversation_already_has_active_response") {
+    state.sentFollowupCallIds.delete(rejectedFollowup.callId);
+    state.pendingSchedulingFollowup = rejectedFollowup;
+    logRealtimeEvent({ type: "scheduling-followup.requeued", callId: rejectedFollowup.callId });
+    return;
+  }
+
+  if (event.error?.message) {
+    addMessage({ who: "Realtime error", type: "system", text: event.error.message });
+  }
 }
 
 function flushAgentAudioTurn() {
@@ -733,7 +763,6 @@ function flushAgentAudioTurn() {
     : cleanAgentTurn(state.agentAudioTurnText);
   if (text) {
     addMessage({ who: "Riley", type: "agent", text });
-    updateLiveStateFromAgentText(text);
   }
   state.agentAudioTurnText = "";
   state.agentAudioSegments = [];
@@ -822,7 +851,7 @@ function schedulePendingToolWatchdog(callId) {
     if (!requestedWindow) return;
     state.handledToolCalls.add(callId);
     runClientSchedulingFallback(requestedWindow, `watchdog:${callId}`, callId);
-  }, 1200);
+  }, TOOL_CALL_WATCHDOG_MS);
   state.pendingToolTimers.set(callId, timer);
 }
 
@@ -847,6 +876,8 @@ function findSchedulingToolItem(event) {
 }
 
 async function handleSchedulingToolCall(callId, rawArguments) {
+  const sessionGeneration = state.realtimeSessionGeneration;
+  const sessionChannel = state.dataChannel;
   let args = {};
   try {
     args = typeof rawArguments === "string" ? JSON.parse(rawArguments || "{}") : rawArguments;
@@ -865,7 +896,7 @@ async function handleSchedulingToolCall(callId, rawArguments) {
     caregiver_context: args.caregiver_context || args.caregiverContext || ""
   };
 
-  if (!state.voiceVerified && callerMentionedAnyAcceptedVerificationValue()) {
+  if (!state.voiceVerified && callerProvidedFullVerification()) {
     state.voiceVerified = true;
   }
 
@@ -875,7 +906,13 @@ async function handleSchedulingToolCall(callId, rawArguments) {
       message: "Voice-channel verification is required before scheduling.",
       next_action: "Ask for caller name and date of birth before checking appointment availability."
     };
-    sendSchedulingFunctionOutputToRealtime(callId, result, "Ask for caller name and date of birth, then continue the scheduling workflow. Do not ask for a callback.");
+    sendSchedulingFunctionOutputToRealtime(
+      callId,
+      result,
+      "Ask for caller name and date of birth, then continue the scheduling workflow. Do not ask for a callback.",
+      sessionGeneration,
+      sessionChannel
+    );
     return;
   }
 
@@ -889,7 +926,9 @@ async function handleSchedulingToolCall(callId, rawArguments) {
     sendSchedulingFunctionOutputToRealtime(
       callId,
       result,
-      "Ask what day or time window works best before checking the scheduling system. Do not confirm or imply a slot is booked."
+      "Ask what day or time window works best before checking the scheduling system. Do not confirm or imply a slot is booked.",
+      sessionGeneration,
+      sessionChannel
     );
     return;
   }
@@ -912,7 +951,9 @@ async function handleSchedulingToolCall(callId, rawArguments) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
+    if (!isSchedulingSessionCurrent(sessionGeneration, sessionChannel)) return;
     const result = await response.json();
+    if (!isSchedulingSessionCurrent(sessionGeneration, sessionChannel)) return;
     result.client_elapsed_ms = Math.round(performance.now() - startedAt);
     if (!response.ok) throw new Error(result.error || "Scheduling tool failed.");
 
@@ -924,9 +965,12 @@ async function handleSchedulingToolCall(callId, rawArguments) {
     sendSchedulingFunctionOutputToRealtime(
       callId,
       result,
-      schedulingFollowupInstructions(result)
+      schedulingFollowupInstructions(result),
+      sessionGeneration,
+      sessionChannel
     );
   } catch (error) {
+    if (!isSchedulingSessionCurrent(sessionGeneration, sessionChannel)) return;
     const result = {
       status: "error",
       message: error.message || String(error),
@@ -937,42 +981,27 @@ async function handleSchedulingToolCall(callId, rawArguments) {
     sendSchedulingFunctionOutputToRealtime(
       callId,
       result,
-      "Continue the call naturally. Route this to staff if the scheduling result is unavailable and do not discuss implementation details."
+      "Continue the call naturally. Route this to staff if the scheduling result is unavailable and do not discuss implementation details.",
+      sessionGeneration,
+      sessionChannel
     );
-  }
-}
-
-function updateLiveStateFromAgentText(text) {
-  const normalized = text.toLowerCase();
-  if (
-    (state.callerVerificationProvided || callerMentionedAnyAcceptedVerificationValue()) && (
-      normalized.includes("that matches") ||
-      normalized.includes("validation is complete") ||
-      normalized.includes("verification is complete")
-    )
-  ) {
-    state.voiceVerified = true;
   }
 }
 
 function updateVoiceVerificationFromCallerText(text) {
   state.callerVerificationText = normalizeVerificationText(`${state.callerVerificationText} ${text}`);
-  const normalized = state.callerVerificationText;
-  const acceptedValues = window.SYNTHETIC_KNOWLEDGE?.shared?.validationProtocol?.acceptedDemoValues || [];
-  const matchesAcceptedValue = acceptedValues.some(value =>
-    nameMatchesVerification(normalized, value.name) &&
-    dobMatchesVerification(normalized, value.dateOfBirth)
-  );
-  if (matchesAcceptedValue) {
-    state.callerVerificationProvided = true;
+  if (callerProvidedFullVerification()) {
     state.voiceVerified = true;
   }
 }
 
-function callerMentionedAnyAcceptedVerificationValue() {
+// Single source of truth for demo verification: one accepted identity must match on both
+// name and date of birth. Evidence accumulates across turns, so the caller may supply the
+// name and the date of birth in separate answers. Riley announcing success is never enough.
+function callerProvidedFullVerification() {
   const acceptedValues = window.SYNTHETIC_KNOWLEDGE?.shared?.validationProtocol?.acceptedDemoValues || [];
   return acceptedValues.some(value =>
-    nameMatchesVerification(state.callerVerificationText, value.name) ||
+    nameMatchesVerification(state.callerVerificationText, value.name) &&
     dobMatchesVerification(state.callerVerificationText, value.dateOfBirth)
   );
 }
@@ -1084,7 +1113,9 @@ function inferSchedulingWindowFromText(text) {
 }
 
 async function runClientSchedulingFallback(requestedWindow, stage, callId = null) {
-  if (!state.voiceVerified && callerMentionedAnyAcceptedVerificationValue()) {
+  const sessionGeneration = state.realtimeSessionGeneration;
+  const sessionChannel = state.dataChannel;
+  if (!state.voiceVerified && callerProvidedFullVerification()) {
     state.voiceVerified = true;
   }
 
@@ -1097,7 +1128,9 @@ async function runClientSchedulingFallback(requestedWindow, stage, callId = null
           message: "Voice-channel verification is required before scheduling.",
           next_action: "Ask for caller name and date of birth before checking appointment availability."
         },
-        "Ask for caller name and date of birth, then continue the scheduling workflow. Do not ask for a callback."
+        "Ask for caller name and date of birth, then continue the scheduling workflow. Do not ask for a callback.",
+        sessionGeneration,
+        sessionChannel
       );
     }
     return;
@@ -1139,7 +1172,9 @@ async function runClientSchedulingFallback(requestedWindow, stage, callId = null
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
+    if (!isSchedulingSessionCurrent(sessionGeneration, sessionChannel)) return;
     const result = await response.json();
+    if (!isSchedulingSessionCurrent(sessionGeneration, sessionChannel)) return;
     result.client_elapsed_ms = Math.round(performance.now() - startedAt);
     if (!response.ok) throw new Error(result.error || "Scheduling tool failed.");
 
@@ -1150,10 +1185,13 @@ async function runClientSchedulingFallback(requestedWindow, stage, callId = null
       sendSchedulingFunctionOutputToRealtime(
         callId,
         result,
-        schedulingFollowupInstructions(result)
+        schedulingFollowupInstructions(result),
+        sessionGeneration,
+        sessionChannel
       );
     }
   } catch (error) {
+    if (!isSchedulingSessionCurrent(sessionGeneration, sessionChannel)) return;
     addMessage({ who: "Scheduling system", type: "system", text: error.message || String(error) });
   }
 }
@@ -1171,24 +1209,73 @@ function schedulingFollowupInstructions(result) {
   return "Continue the call naturally using the scheduling system result. End with a clear next step or bounded question. Do not discuss implementation details and do not ask for a callback unless the result says staff follow-up is required.";
 }
 
-function sendSchedulingFunctionOutputToRealtime(callId, result, instructions) {
-  if (!state.dataChannel || state.dataChannel.readyState === "closed") return;
-  const modelResult = toModelSchedulingResult(result);
+function isRealtimeChannelOpen(channel = state.dataChannel) {
+  return Boolean(channel) && channel.readyState === "open";
+}
+
+function isSchedulingSessionCurrent(sessionGeneration, sessionChannel) {
+  return state.realtimeSessionGeneration === sessionGeneration &&
+    state.dataChannel === sessionChannel;
+}
+
+function sendSchedulingFunctionOutputToRealtime(
+  callId,
+  result,
+  instructions,
+  sessionGeneration = state.realtimeSessionGeneration,
+  sessionChannel = state.dataChannel
+) {
+  if (!isSchedulingSessionCurrent(sessionGeneration, sessionChannel) || !isRealtimeChannelOpen(sessionChannel)) return;
+
+  // The model accepts exactly one output per tool-call id.
+  if (!state.sentToolOutputCallIds.has(callId)) {
+    state.sentToolOutputCallIds.add(callId);
+    sessionChannel.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify(toModelSchedulingResult(result))
+      }
+    }));
+  }
+
+  requestSchedulingFollowup(callId, instructions);
+}
+
+// Riley should speak the scheduling result exactly once. If a response is already being
+// generated, defer instead of racing it; the deferred turn is released by response.done.
+function requestSchedulingFollowup(callId, instructions) {
+  if (state.sentFollowupCallIds.has(callId)) return;
+  const followup = { callId, instructions };
+  if (state.activeResponseId) {
+    state.pendingSchedulingFollowup = followup;
+    return;
+  }
+  submitSchedulingFollowup(followup);
+}
+
+function submitSchedulingFollowup(followup) {
+  if (!isRealtimeChannelOpen()) return;
+  const eventId = `sched_followup_${++state.followupSeq}`;
+  state.sentFollowupCallIds.add(followup.callId);
+  state.inFlightFollowups.set(eventId, followup);
   state.dataChannel.send(JSON.stringify({
-    type: "conversation.item.create",
-    item: {
-      type: "function_call_output",
-      call_id: callId,
-      output: JSON.stringify(modelResult)
-    }
-  }));
-  state.dataChannel.send(JSON.stringify({
+    event_id: eventId,
     type: "response.create",
     response: {
       output_modalities: ["audio"],
-      instructions
+      instructions: followup.instructions
     }
   }));
+}
+
+function flushPendingSchedulingFollowup() {
+  const pending = state.pendingSchedulingFollowup;
+  if (!pending) return;
+  state.pendingSchedulingFollowup = null;
+  if (!isRealtimeChannelOpen()) return;
+  submitSchedulingFollowup(pending);
 }
 
 function toModelSchedulingResult(result) {
@@ -1287,6 +1374,7 @@ function formatSchedulingPacket(result) {
 }
 
 function stopRealtimeSession() {
+  state.realtimeSessionGeneration += 1;
   state.dataChannel?.close();
   state.peerConnection?.close();
   state.localStream?.getTracks().forEach(track => track.stop());
@@ -1302,7 +1390,6 @@ function stopRealtimeSession() {
   state.schedulingFallbacks = new Set();
   state.schedulingWindowsHandled = new Set();
   state.voiceVerified = false;
-  state.callerVerificationProvided = false;
   state.liveConversationHints = { languagePreference: "", caregiverContext: "" };
   state.agentTranscriptBuffer = "";
   state.agentAudioTurnText = "";
@@ -1311,6 +1398,12 @@ function stopRealtimeSession() {
   state.callbackDriftCancelled = false;
   state.lastCallerTranscript = "";
   state.callerVerificationText = "";
+  // Pending realtime work must never leak into the next session.
+  state.activeResponseId = null;
+  state.pendingSchedulingFollowup = null;
+  state.inFlightFollowups = new Map();
+  state.sentFollowupCallIds = new Set();
+  state.sentToolOutputCallIds = new Set();
   state.peerConnection = null;
   state.localStream = null;
   state.remoteAudio = null;

@@ -69,7 +69,9 @@ Use this for the most reliable recordings and repeatable demonstrations.
 
 Use this to demonstrate live latency, live transcripts, the server-side auth boundary, and a more natural intent-driven conversation. The live prompt requires voice-channel verification even for signed-in MyHealth users, then treats the scripted run-of-show as example tone and behavior while allowing callers to confirm an existing visit, ask approved access questions, request a reschedule, choose a scheduling option, or change direction mid-call.
 
-The primary live path uses `gpt-realtime-2` with GA WebRTC. Legacy WebRTC remains available only as an older deployment fallback.
+The primary live path uses the `gpt-realtime-2.1` deployment (model version `2026-07-07`) with GA WebRTC. Legacy WebRTC remains available only as an older deployment fallback.
+
+`server.py` builds a single authoritative Realtime session object that both mints the short-lived client secret and drives the browser `session.update`. This keeps instructions, voice, transcription, turn detection, tools, and reasoning effort identical on both sides. `model` and `reasoning` are set only at session creation, because the Realtime service rejects them on an established session.
 
 ### Mock Scheduling Tool
 
