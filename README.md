@@ -167,18 +167,37 @@ For rescheduling, live voice mode exposes a local Realtime tool named `confirm_a
 
 The tool is a local stub only. It does not call scheduling, EHR, CRM, billing, or contact-center systems.
 
+Scheduling is gated by a small in-memory **demo workflow guard**. The browser submits caller
+verification utterances to `/api/demo-tools/verify-session`; when the active signed-in persona's
+name and date of birth both match, the server issues a short-lived, session-bound scheduling
+capability that `/api/demo-tools/confirm-appointment` requires. The capability expires and must be
+renewed with fresh caller evidence. It is a workflow guard for a demo over public synthetic data,
+not identity proof, and it is never exposed to the model.
+
 Automated mock rescheduling is the primary demo flow. Callback tasks are fallback behavior only when the mock scheduling system cannot complete the request or staff judgment is needed.
 
 ## Project Structure
 
 - `index.html`: UI shell for patient and executive views
 - `styles.css`: complete visual system and responsive behavior
+- `theme.js`: theme selection, kept external so the page loads under a strict CSP
 - `app.js`: runtime orchestration, demo logic, and realtime controls
+- `demo-domain.js`: shared verification, scoped-grounding, and scheduling-window helpers
 - `scenarios.js`: scripted scenario content and talk tracks
 - `synthetic-data.js`: approved demo grounding data
 - `server.py`: local static host plus realtime token endpoints
 - `generate_script.js`: optional generator for the ignored `conversation-script.md` validation transcript
 - `scripts/capture_ui_screenshots.py`: automated screenshot capture utility
+- `tests/`: dependency-free regression suites (`unittest` and `node --test`)
+
+## Tests
+
+The suites use only the Python standard library and Node's built-in test runner.
+
+```bash
+python -m unittest discover -s tests -p "test_*.py"
+node --test tests/test_demo_domain.js tests/test_app.js
+```
 
 ## Repository Docs
 
