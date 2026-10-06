@@ -34,21 +34,59 @@
   function normalizeVerificationText(value) {
     return String(value || "")
       .toLowerCase()
-      .replace(/[,./-]/g, " ")
+      .replace(/[\u2018\u2019]/g, "'")
+      .replace(/[,./:;!?()"\u201c\u201d\u2013\u2014-]/g, " ")
       .replace(/\s+/g, " ")
       .trim();
   }
 
-  function includesWholePhrase(normalizedText, phrase) {
+  // A factor next to a negation ("i'm not jordan lee", "jordan lee is not my name") is a
+  // denial, not evidence, and the latest mention of a factor wins. Other parts of the same
+  // name may sit between the negation and the word it denies.
+  // Keep in sync with server.py factor_stance().
+  const NEGATION = "(?:not|never|isn't|isnt|wasn't|wasnt|ain't|aint)";
+  const DENIAL_FILLERS = ["really", "actually", "even", "named", "called", "the"];
+  const DOB_DENIAL_FILLERS = ["born", "on"];
+
+  function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function phraseStance(normalizedText, phrase, extraFillers = []) {
     const normalizedPhrase = normalizeVerificationText(phrase);
-    if (!normalizedPhrase) return false;
-    return (` ${normalizedText} `).includes(` ${normalizedPhrase} `);
+    if (!normalizedPhrase) return { index: -1, stance: "" };
+    const fillers = [...DENIAL_FILLERS, ...extraFillers].map(escapeRegExp).join("|");
+    const deniedBefore = new RegExp(`(?:^|\\s)${NEGATION}(?:\\s+(?:${fillers})){0,4}\\s$`);
+    const deniedAfter = new RegExp(
+      `^\\s(?:(?:${fillers})\\s+){0,4}(?:(?:is|was|are)\\s+(?:not|never)|isn't|isnt|wasn't|wasnt|ain't|aint)(?:\\s|$)`
+    );
+    const text = ` ${normalizedText} `;
+    const needle = ` ${normalizedPhrase} `;
+    let latest = { index: -1, stance: "" };
+    for (let index = text.indexOf(needle); index >= 0; index = text.indexOf(needle, index + 1)) {
+      const denied = deniedBefore.test(text.slice(0, index + 1)) ||
+        deniedAfter.test(text.slice(index + needle.length - 1));
+      latest = { index, stance: denied ? "denied" : "affirmed" };
+    }
+    return latest;
+  }
+
+  function latestStance(normalizedText, phrases, extraFillers = []) {
+    let latest = { index: -1, stance: "" };
+    for (const phrase of phrases) {
+      const found = phraseStance(normalizedText, phrase, extraFillers);
+      if (found.index > latest.index || (found.index === latest.index && found.stance === "denied")) {
+        latest = found;
+      }
+    }
+    return latest.stance;
   }
 
   function nameMatchesVerification(normalizedText, name) {
     const text = normalizeVerificationText(normalizedText);
     const parts = normalizeVerificationText(name).split(" ").filter(Boolean);
-    return parts.length > 0 && parts.every(part => includesWholePhrase(text, part));
+    return parts.length > 0 &&
+      parts.every(part => latestStance(text, [part], parts) === "affirmed");
   }
 
   function parseDemoDateOfBirth(value) {
@@ -72,7 +110,7 @@
   function dobMatchesVerification(normalizedText, dateOfBirth) {
     const text = normalizeVerificationText(normalizedText);
     const parsed = parseDemoDateOfBirth(dateOfBirth);
-    if (!parsed) return includesWholePhrase(text, dateOfBirth);
+    if (!parsed) return latestStance(text, [dateOfBirth], DOB_DENIAL_FILLERS) === "affirmed";
 
     const month = MONTH_NAMES[parsed.monthIndex];
     const monthNumber = String(parsed.monthIndex + 1);
@@ -100,7 +138,7 @@
       variants.push(`${month} ${numericOrdinal} ${spokenYear}`);
       if (ordinal) variants.push(`${month} ${ordinal} ${spokenYear}`);
     }
-    return variants.some(variant => includesWholePhrase(text, variant));
+    return latestStance(text, variants, DOB_DENIAL_FILLERS) === "affirmed";
   }
 
   function findActiveVerificationRecord(profile, acceptedDemoValues) {

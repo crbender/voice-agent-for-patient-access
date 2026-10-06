@@ -30,6 +30,18 @@ test("active profile requires both name and date of birth", () => {
   );
 });
 
+test("negated identity statements never satisfy active-profile verification", () => {
+  const cases = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "verification_negation_cases.json"), "utf8")
+  );
+  for (const text of cases.denied) {
+    assert.equal(domain.matchesActiveVerification(text, accessProfile, accepted), false, text);
+  }
+  for (const text of cases.affirmed) {
+    assert.equal(domain.matchesActiveVerification(text, accessProfile, accepted), true, text);
+  }
+});
+
 test("another accepted demo persona cannot verify the active profile", () => {
   assert.equal(
     domain.matchesActiveVerification(

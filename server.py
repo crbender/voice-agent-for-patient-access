@@ -339,20 +339,65 @@ def bounded_optional_text(value, field_name, max_length=240):
 
 
 def normalize_verification_text(value):
-    return re.sub(
-        r"\s+",
-        " ",
-        re.sub(r"[,./-]", " ", str(value or "").lower()),
-    ).strip()
+    text = re.sub(r"[\u2018\u2019]", "'", str(value or "").lower())
+    text = re.sub(r"[,./:;!?()\"\u201c\u201d\u2013\u2014-]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+# A factor next to a negation ("i'm not jordan lee", "jordan lee is not my name") is a
+# denial, not evidence, and the latest mention of a factor wins. Other parts of the same
+# name may sit between the negation and the word it denies.
+# Keep in sync with demo-domain.js phraseStance().
+NEGATION = r"(?:not|never|isn't|isnt|wasn't|wasnt|ain't|aint)"
+DENIAL_FILLERS = ("really", "actually", "even", "named", "called", "the")
+DOB_DENIAL_FILLERS = ("born", "on")
+
+
+def phrase_stance(normalized_text, phrase, extra_fillers=()):
+    normalized_phrase = normalize_verification_text(phrase)
+    if not normalized_phrase:
+        return -1, ""
+    fillers = "|".join(re.escape(word) for word in (*DENIAL_FILLERS, *extra_fillers))
+    denied_before = re.compile(rf"(?:^|\s){NEGATION}(?:\s+(?:{fillers})){{0,4}}\s$")
+    denied_after = re.compile(
+        rf"^\s(?:(?:{fillers})\s+){{0,4}}"
+        r"(?:(?:is|was|are)\s+(?:not|never)|isn't|isnt|wasn't|wasnt|ain't|aint)(?:\s|$)"
+    )
+    text = f" {normalized_text} "
+    needle = f" {normalized_phrase} "
+    latest = (-1, "")
+    index = text.find(needle)
+    while index >= 0:
+        denied = bool(
+            denied_before.search(text[: index + 1])
+            or denied_after.search(text[index + len(needle) - 1:])
+        )
+        latest = (index, "denied" if denied else "affirmed")
+        index = text.find(needle, index + 1)
+    return latest
+
+
+def latest_stance(normalized_text, phrases, extra_fillers=()):
+    latest = (-1, "")
+    for phrase in phrases:
+        found = phrase_stance(normalized_text, phrase, extra_fillers)
+        if found[0] > latest[0] or (found[0] == latest[0] and found[1] == "denied"):
+            latest = found
+    return latest[1]
 
 
 def verification_matches_profile(text, profile):
-    normalized = f" {normalize_verification_text(text)} "
+    normalized = normalize_verification_text(text)
     name_parts = normalize_verification_text(profile["name"]).split()
-    name_matches = all(f" {part} " in normalized for part in name_parts)
-    dob_matches = any(
-        f" {normalize_verification_text(variant)} " in normalized
-        for variant in profile["date_of_birth_variants"]
+    name_matches = bool(name_parts) and all(
+        latest_stance(normalized, [part], name_parts) == "affirmed"
+        for part in name_parts
+    )
+    dob_matches = (
+        latest_stance(
+            normalized, profile["date_of_birth_variants"], DOB_DENIAL_FILLERS
+        )
+        == "affirmed"
     )
     return name_matches and dob_matches
 

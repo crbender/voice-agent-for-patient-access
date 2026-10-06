@@ -90,7 +90,7 @@ function loadApp() {
   vm.createContext(context);
   const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
   vm.runInContext(
-    `${source}\n;globalThis.__appTestHooks = { state, updateVoiceVerificationFromCallerText, waitForServerVerification, MAX_VERIFICATION_CONTEXT_CHARS };`,
+    `${source}\n;globalThis.__appTestHooks = { state, updateVoiceVerificationFromCallerText, waitForServerVerification, runClientSchedulingFallback, MAX_VERIFICATION_CONTEXT_CHARS };`,
     context
   );
   return context;
@@ -297,4 +297,68 @@ test("a rejected verification request is a service failure, not missing evidence
 
   assert.equal(result.status, "service_failure");
   assert.equal(state.schedulingCapability, "");
+});
+
+function startAuthorizedWatchdogSession(context, scheduleResponder) {
+  const { state } = context.__appTestHooks;
+  const sentEvents = [];
+  state.dataChannel = {
+    readyState: "open",
+    send(message) { sentEvents.push(JSON.parse(message)); }
+  };
+  state.demoSessionId = "demo-session-watchdog";
+  state.realtimeSessionGeneration = 9;
+  state.voiceVerified = true;
+  state.schedulingCapability = "capability-watchdog";
+  context.fetch = async url => {
+    if (url === "/api/realtime/status") {
+      return { ok: true, status: 200, json: async () => ({ configured: false }) };
+    }
+    assert.equal(url, "/api/demo-tools/confirm-appointment");
+    return scheduleResponder();
+  };
+  return sentEvents;
+}
+
+function toolOutputs(sentEvents, callId) {
+  return sentEvents.filter(event =>
+    event.type === "conversation.item.create" &&
+    event.item?.type === "function_call_output" &&
+    event.item.call_id === callId
+  );
+}
+
+test("watchdog fallback returns a tool error output when scheduling fails", async () => {
+  const context = loadApp();
+  const { runClientSchedulingFallback } = context.__appTestHooks;
+  const sentEvents = startAuthorizedWatchdogSession(context, async () => {
+    throw new Error("Scheduling system unavailable.");
+  });
+
+  await runClientSchedulingFallback("Friday at 11:30 AM", "watchdog:call-fail", "call-fail");
+
+  const outputs = toolOutputs(sentEvents, "call-fail");
+  assert.equal(outputs.length, 1);
+  assert.equal(JSON.parse(outputs[0].item.output).status, "error");
+});
+
+test("each stalled tool call for an already-handled window still gets its own output", async () => {
+  const context = loadApp();
+  const { runClientSchedulingFallback } = context.__appTestHooks;
+  const sentEvents = startAuthorizedWatchdogSession(context, async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      status: "confirmed",
+      selected_slot_id: "fri-1130",
+      confirmed_window: "Friday at 11:30 AM",
+      confirmation_number: "NLH-48291"
+    })
+  }));
+
+  await runClientSchedulingFallback("Friday at 11:30 AM", "watchdog:call-a", "call-a");
+  await runClientSchedulingFallback("Friday at 11:30 AM", "watchdog:call-b", "call-b");
+
+  assert.equal(toolOutputs(sentEvents, "call-a").length, 1);
+  assert.equal(toolOutputs(sentEvents, "call-b").length, 1);
 });

@@ -1269,9 +1269,12 @@ async function runClientSchedulingFallback(requestedWindow, stage, callId = null
   }
 
   const fallbackKey = `${stage}:${requestedWindow}`;
-  if (state.schedulingFallbacks.has(fallbackKey)) return;
   const windowKey = requestedWindow.toLowerCase();
-  if (state.schedulingWindowsHandled.has(windowKey)) return;
+  // A tool call needs its own output, so only call-less fallbacks are de-duplicated by window.
+  if (!callId) {
+    if (state.schedulingFallbacks.has(fallbackKey)) return;
+    if (state.schedulingWindowsHandled.has(windowKey)) return;
+  }
   state.schedulingFallbacks.add(fallbackKey);
   state.schedulingWindowsHandled.add(windowKey);
 
@@ -1332,7 +1335,22 @@ async function runClientSchedulingFallback(requestedWindow, stage, callId = null
     }
   } catch (error) {
     if (!isSchedulingSessionCurrent(sessionGeneration, sessionChannel)) return;
-    addMessage({ who: "Scheduling system", type: "system", text: error.message || String(error) });
+    const result = {
+      status: "error",
+      message: error.message || String(error),
+      next_action: "Route to staff queue."
+    };
+    addMessage({ who: "Scheduling system", type: "system", text: result.message });
+    if (callId) {
+      state.pendingToolStatuses.delete(callId);
+      sendSchedulingFunctionOutputToRealtime(
+        callId,
+        result,
+        "Continue the call naturally. Route this to staff if the scheduling result is unavailable and do not discuss implementation details.",
+        sessionGeneration,
+        sessionChannel
+      );
+    }
   }
 }
 

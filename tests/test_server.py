@@ -184,6 +184,26 @@ class VerificationLimitTests(unittest.TestCase):
             )
         self.assertEqual(400, raised.exception.status)
 
+    def test_negated_identity_statements_never_issue_a_capability(self):
+        cases_path = os.path.join(
+            os.path.dirname(__file__), "verification_negation_cases.json"
+        )
+        with open(cases_path, encoding="utf-8") as cases_file:
+            cases = json.load(cases_file)
+
+        for expected, texts in (("validation_pending", cases["denied"]), ("verified", cases["affirmed"])):
+            for text in texts:
+                with self.subTest(text=text):
+                    demo_session_id = server.create_demo_session_state("access")
+                    status, result = server.record_server_verification(
+                        {"demo_session_id": demo_session_id, "verification_text": text}
+                    )
+                    self.assertEqual(200, status)
+                    self.assertEqual(expected, result["status"])
+                    self.assertEqual(
+                        expected == "verified", "scheduling_capability" in result
+                    )
+
 
 class GroundingTests(unittest.TestCase):
     def test_complete_grounding_tail_is_preserved(self):

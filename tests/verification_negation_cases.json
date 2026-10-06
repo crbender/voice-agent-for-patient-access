@@ -1,0 +1,33 @@
+{
+  "denied": [
+    "I am not Jordan Lee, July 14, 1982.",
+    "I'm not Jordan Lee. July 14 1982.",
+    "This isn't Jordan Lee, born July 14 1982.",
+    "This isn\u2019t Jordan Lee, July 14, 1982.",
+    "I'm not actually Jordan Lee, July 14, 1982.",
+    "My name is not really named Jordan Lee, July 14, 1982.",
+    "Never really called Jordan Lee, July 14, 1982.",
+    "Not: Jordan Lee, July 14, 1982.",
+    "Jordan Lee is not my name. July 14, 1982.",
+    "Jordan Lee isn't me. July 14, 1982.",
+    "I'm not Jordan Lee. I am Jordan Smith. July 14, 1982.",
+    "I am Jordan Lee, July 14, 1982. Sorry, I am not Jordan Lee.",
+    "Jordan Lee, but my birthday is not July 14, 1982.",
+    "It was never July 14, 1982. Jordan Lee.",
+    "Jordan Lee. July 14, 1982 is not my birthday.",
+    "Jordan Lee. I was not born on July 14 1982.",
+    "Jordan Lee. I wasn't born July 14 1982."
+  ],
+  "affirmed": [
+    "Jordan Lee, July 14, 1982.",
+    "It's Jordan Lee! July 14, 1982.",
+    "Lee, Jordan. July 14, 1982.",
+    "I'm not sure what you need, but it's Jordan Lee, July 14, 1982.",
+    "Not a problem. Jordan Lee, July 14, 1982.",
+    "I'm Jordan Lee, not his dad. July 14, 1982.",
+    "Sorry, I'm not... I'm Jordan Lee, July 14 1982.",
+    "I am not Jordan Lee. Sorry, I am Jordan Lee, July 14, 1982.",
+    "I can't make it tomorrow. This is Jordan Lee, July 14, 1982.",
+    "Jordan Lee, born on July 14, 1982."
+  ]
+}
