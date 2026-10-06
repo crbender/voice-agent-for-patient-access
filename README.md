@@ -114,25 +114,42 @@ cp .env.example .env
 2. Set required values in `.env`:
 
 ```bash
-AZURE_OPENAI_ENDPOINT=https://YOUR-ENDPOINT.cognitiveservices.azure.com
-AZURE_OPENAI_REALTIME_DEPLOYMENT=gpt-realtime-2
+AZURE_OPENAI_ENDPOINT=https://YOUR-RESOURCE.openai.azure.com
+AZURE_OPENAI_REALTIME_DEPLOYMENT=gpt-realtime-2.1
 AZURE_OPENAI_API_KEY=PASTE-YOUR-KEY-HERE
-AZURE_OPENAI_REALTIME_VOICE=alloy
+AZURE_OPENAI_REALTIME_VOICE=marin
 AZURE_OPENAI_REALTIME_PROTOCOL=ga-webrtc
 AZURE_OPENAI_REALTIME_REGION=eastus2
 AZURE_OPENAI_REALTIME_API_VERSION=2025-04-01-preview
 # Azure may require this to be the name of an existing transcription model deployment.
 REALTIME_TRANSCRIPTION_MODEL=whisper-1
+# gpt-realtime-2.1 reasoning: minimal | low | medium | high (low suits live voice).
+REALTIME_REASONING_EFFORT=low
+# Silence before the model takes its turn. Lower feels snappier; raise in noisy rooms.
+REALTIME_VAD_SILENCE_MS=700
 PORT=8787
 # Optional: generate ignored conversation-script.md on server startup.
 GENERATE_CONVERSATION_SCRIPT=0
 ```
 
+`AZURE_OPENAI_ENDPOINT` must be the **base resource origin**, not the realtime WebSocket URL shown in the Foundry playground. If you paste `wss://YOUR-RESOURCE.openai.azure.com/openai/v1/realtime?model=...`, the server normalizes it to `https://YOUR-RESOURCE.openai.azure.com` and reports `endpointNormalized` on the status endpoint. Only HTTPS endpoints are accepted: `http://` and `ws://` endpoints are rejected before any upstream request, so the API key is never sent over cleartext.
+
 3. Restart server and refresh browser.
 
 The right panel should show Realtime voice configured.
 
-The primary live voice path now targets `gpt-realtime-2` with GA WebRTC. The older `legacy-webrtc` path remains in the code only as a fallback for previous `gpt-realtime-1.5` deployments.
+The primary live voice path now targets the `gpt-realtime-2.1` deployment with GA WebRTC. The deployment uses model version `2026-07-07` and the Global Standard tier shown in the Foundry deployment details. The older `legacy-webrtc` path remains in the code only as a fallback for previous `gpt-realtime-1.5` deployments.
+
+### Tuning gpt-realtime-2.1
+
+`gpt-realtime-2.1` is a reasoning voice model, so the session is configured for it explicitly:
+
+- `REALTIME_REASONING_EFFORT` defaults to `low`, the recommended starting point for responsive voice agents. Raise it only if scheduling or escalation decisions need more deliberation.
+- `AZURE_OPENAI_REALTIME_VOICE` defaults to `marin`, this model's native default. `alloy`, `cedar`, `sage`, `shimmer`, and `verse` are also available.
+- `REALTIME_VAD_SILENCE_MS` defaults to `700`, which keeps turn-taking brisk on camera. Raise it toward `1000` in noisy rooms.
+- The model emits short spoken preambles (for example, "I'll check the scheduling system for Thursday") before tool calls. This is expected behavior and covers scheduling latency.
+
+The server builds one authoritative session object that both mints the client secret and drives the browser `session.update`, so audio, turn detection, tools, and reasoning cannot drift apart. `model` and `reasoning` are deliberately excluded from the browser `session.update`, because the Realtime service only accepts them when the session is created and otherwise returns `Unsupported option for this model.`
 
 The GA WebRTC path uses `/openai/v1/realtime/client_secrets` for short-lived session credentials and `/openai/v1/realtime/calls` for the browser SDP exchange. The local demo keeps the data-channel event stream unfiltered so the browser can receive Realtime function-call events and return `function_call_output` for the scheduling tool.
 
@@ -150,18 +167,53 @@ For rescheduling, live voice mode exposes a local Realtime tool named `confirm_a
 
 The tool is a local stub only. It does not call scheduling, EHR, CRM, billing, or contact-center systems.
 
+Scheduling is gated by a small in-memory **demo workflow guard**. The browser submits caller
+verification utterances to `/api/demo-tools/verify-session`; when the active signed-in persona's
+name and date of birth both match, the server issues a short-lived, session-bound scheduling
+capability that `/api/demo-tools/confirm-appointment` requires. The capability expires and must be
+renewed with fresh caller evidence. It is a workflow guard for a demo over public synthetic data,
+not identity proof, and it is never exposed to the model.
+
+Caller evidence accumulates across turns, so the name and date of birth can arrive in separate
+answers. Both the browser and the server keep only the most recent 2,000 normalized characters,
+and the server accepts verification requests up to that same size. A long call therefore cannot lock
+verification out. If the name and date of birth were said more than 2,000 characters apart, Riley
+asks once more. A rejected verification request appears as a visible service failure rather than
+as missing evidence. A name or date of birth stated next to a negation, such as "I'm not Jordan
+Lee" or "July 14, 1982 is not my birthday," never counts as evidence, and the latest mention of each
+factor wins, so a later correction overrides an earlier answer. The browser and server apply the same
+rule. This is keyword-based demo matching, not language understanding.
+
+The demo assumes the caller is already authenticated by the simulated MyHealth portal sign-in, so
+each scenario's signed-in profile is part of Riley's grounding. Voice-channel verification is a
+conversational step that Riley is instructed to complete before account-specific answers in every
+scenario; the server-enforced guard above applies only to the scheduling action, because revenue-cycle
+and multilingual flows expose no tools or server-side actions to gate.
+
 Automated mock rescheduling is the primary demo flow. Callback tasks are fallback behavior only when the mock scheduling system cannot complete the request or staff judgment is needed.
 
 ## Project Structure
 
 - `index.html`: UI shell for patient and executive views
 - `styles.css`: complete visual system and responsive behavior
+- `theme.js`: theme selection, kept external so the page loads under a strict CSP
 - `app.js`: runtime orchestration, demo logic, and realtime controls
+- `demo-domain.js`: shared verification, scoped-grounding, and scheduling-window helpers
 - `scenarios.js`: scripted scenario content and talk tracks
 - `synthetic-data.js`: approved demo grounding data
 - `server.py`: local static host plus realtime token endpoints
 - `generate_script.js`: optional generator for the ignored `conversation-script.md` validation transcript
 - `scripts/capture_ui_screenshots.py`: automated screenshot capture utility
+- `tests/`: dependency-free regression suites (`unittest` and `node --test`)
+
+## Tests
+
+The suites use only the Python standard library and Node's built-in test runner.
+
+```bash
+python -m unittest discover -s tests -p "test_*.py"
+node --test tests/test_demo_domain.js tests/test_app.js
+```
 
 ## Repository Docs
 

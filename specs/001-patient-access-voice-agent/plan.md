@@ -10,7 +10,7 @@ Use a small local web app with vanilla HTML, CSS, JavaScript, and a Python stand
 
 The demo has two execution paths:
 
-- **Realtime voice path**: default mode for the opening wow moment. The browser starts a GA WebRTC session for `gpt-realtime-2` using a short-lived client secret minted by `server.py`.
+- **Realtime voice path**: default mode for the opening wow moment. The browser starts a GA WebRTC session for the `gpt-realtime-2.1` deployment using a short-lived client secret minted by `server.py`.
 - **Scripted path**: deterministic 90-second sequence for reliable recording, fallback, and executive narration.
 
 ## UI surfaces
@@ -24,10 +24,10 @@ The demo has two execution paths:
 
 The browser rendering functions are event-driven. The scripted demo emits transcript, metric, packet, and scene events. The live path uses Azure OpenAI Realtime/WebRTC and updates the transcript from Realtime events when available.
 
-The primary deployment uses the GA WebRTC protocol for `gpt-realtime-2`:
+The primary deployment uses the GA WebRTC protocol for `gpt-realtime-2.1`:
 
 - `server.py` loads `.env`, validates configuration, and mints short-lived Realtime client secrets.
-- `AZURE_OPENAI_REALTIME_DEPLOYMENT=gpt-realtime-2`
+- `AZURE_OPENAI_REALTIME_DEPLOYMENT=gpt-realtime-2.1`
 - `AZURE_OPENAI_REALTIME_PROTOCOL=ga-webrtc`
 - Client secret endpoint: `/openai/v1/realtime/client_secrets`
 - Browser WebRTC URL: `/openai/v1/realtime/calls`
@@ -47,7 +47,7 @@ Deterministic availability is scenario-based:
 
 The UI should immediately show that the scheduling system is checking availability, then update the transcript/action packet with the scheduling result. It must not show mock/demo language in the caller-facing transcript.
 
-For the gpt-realtime-2 showcase pass, the scripted patient-access flow intentionally exercises a multi-turn reasoning path, while live voice mode stays intent-driven. Live voice always starts with voice-channel verification, even for signed-in MyHealth users. After verification, a caller can confirm the existing appointment, ask approved access questions, request a reschedule, choose from returned options, or change direction. The action packet should show validation state, current visit or requested slot, options/confirmed slot when applicable, language preference, caregiver context, and staff-safe prep notes.
+For the gpt-realtime-2.1 showcase pass, the scripted patient-access flow intentionally exercises a multi-turn reasoning path, while live voice mode stays intent-driven. Live voice always starts with voice-channel verification, even for signed-in MyHealth users. After verification, a caller can confirm the existing appointment, ask approved access questions, request a reschedule, choose from returned options, or change direction. The action packet should show validation state, current visit or requested slot, options/confirmed slot when applicable, language preference, caregiver context, and staff-safe prep notes.
 
 ## Grounding strategy
 
