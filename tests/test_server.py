@@ -154,6 +154,37 @@ class SchedulingResolutionTests(unittest.TestCase):
         self.assertEqual("unsupported", result["status"])
 
 
+class VerificationLimitTests(unittest.TestCase):
+    def setUp(self):
+        server._reset_demo_session_state()
+
+    def test_bounded_client_text_with_distant_factors_verifies(self):
+        demo_session_id = server.create_demo_session_state("access")
+        filler = "so i was thinking about whether my mom can drive me there "
+        text = "this is jordan lee " + filler * 40
+        text = text[: server.MAX_VERIFICATION_CONTEXT_CHARS - len(" july 14 1982")]
+        text += " july 14 1982"
+        self.assertEqual(server.MAX_VERIFICATION_CONTEXT_CHARS, len(text))
+
+        status, result = server.record_server_verification(
+            {"demo_session_id": demo_session_id, "verification_text": text}
+        )
+
+        self.assertEqual(200, status)
+        self.assertEqual("verified", result["status"])
+
+    def test_text_over_the_shared_limit_is_rejected(self):
+        demo_session_id = server.create_demo_session_state("access")
+        with self.assertRaises(server.RequestValidationError) as raised:
+            server.record_server_verification(
+                {
+                    "demo_session_id": demo_session_id,
+                    "verification_text": "x" * (server.MAX_VERIFICATION_CONTEXT_CHARS + 1),
+                }
+            )
+        self.assertEqual(400, raised.exception.status)
+
+
 class GroundingTests(unittest.TestCase):
     def test_complete_grounding_tail_is_preserved(self):
         request_body = {

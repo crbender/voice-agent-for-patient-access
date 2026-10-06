@@ -174,6 +174,13 @@ capability that `/api/demo-tools/confirm-appointment` requires. The capability e
 renewed with fresh caller evidence. It is a workflow guard for a demo over public synthetic data,
 not identity proof, and it is never exposed to the model.
 
+Caller evidence accumulates across turns, so the name and date of birth can arrive in separate
+answers. Both the browser and the server keep only the most recent 2,000 normalized characters,
+and the server accepts verification requests up to that same size. A long call therefore cannot lock
+verification out. If the name and date of birth were said more than 2,000 characters apart, Riley
+asks once more. A rejected verification request appears as a visible service failure rather than
+as missing evidence.
+
 The demo assumes the caller is already authenticated by the simulated MyHealth portal sign-in, so
 each scenario's signed-in profile is part of Riley's grounding. Voice-channel verification is a
 conversational step that Riley is instructed to complete before account-specific answers in every

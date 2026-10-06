@@ -90,7 +90,7 @@ function loadApp() {
   vm.createContext(context);
   const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
   vm.runInContext(
-    `${source}\n;globalThis.__appTestHooks = { state, updateVoiceVerificationFromCallerText, waitForServerVerification };`,
+    `${source}\n;globalThis.__appTestHooks = { state, updateVoiceVerificationFromCallerText, waitForServerVerification, MAX_VERIFICATION_CONTEXT_CHARS };`,
     context
   );
   return context;
@@ -184,4 +184,117 @@ test("production verification retries only after an unsuccessful operation settl
   assert.equal(retry.status, "verified");
   assert.equal(requestCount, 2);
   assert.equal(state.schedulingCapability, "capability-2");
+});
+
+function serverLimit(name) {
+  const source = fs.readFileSync(path.join(__dirname, "..", "server.py"), "utf8");
+  const match = source.match(new RegExp(`^${name}\\s*=\\s*([\\d_]+)\\s*$`, "m"));
+  assert.ok(match, `${name} not found in server.py`);
+  return Number(match[1].replace(/_/g, ""));
+}
+
+const FILLER = "so i was thinking about whether my mom can drive me there and what time works for her ";
+const FILLER_WORDS = new Set(FILLER.trim().split(" "));
+
+// Mirrors the server's length check so oversized client text surfaces as a 400.
+function useVerifyEndpoint(context) {
+  const limit = serverLimit("MAX_VERIFICATION_UTTERANCE_CHARS");
+  const sent = [];
+  context.fetch = async (url, options) => {
+    if (url === "/api/realtime/status") {
+      return { ok: true, status: 200, json: async () => ({ configured: false }) };
+    }
+    const text = JSON.parse(options.body).verification_text;
+    sent.push(text);
+    if (text.length > limit) {
+      return { ok: false, status: 400, json: async () => ({ error: "too long" }) };
+    }
+    const verified = domain.matchesActiveVerification(
+      text,
+      knowledge.shared.signedInProfiles.access,
+      knowledge.shared.validationProtocol.acceptedDemoValues
+    );
+    return {
+      ok: true,
+      status: 200,
+      json: async () => (verified
+        ? { status: "verified", scheduling_capability: "capability-long" }
+        : { status: "validation_pending" })
+    };
+  };
+  return sent;
+}
+
+function startLiveSession(state, demoSessionId) {
+  state.dataChannel = { readyState: "open" };
+  state.demoSessionId = demoSessionId;
+  state.realtimeSessionGeneration = 7;
+}
+
+test("client verification bound equals both server verification limits", () => {
+  const { MAX_VERIFICATION_CONTEXT_CHARS } = loadApp().__appTestHooks;
+  assert.equal(MAX_VERIFICATION_CONTEXT_CHARS, serverLimit("MAX_VERIFICATION_CONTEXT_CHARS"));
+  assert.equal(MAX_VERIFICATION_CONTEXT_CHARS, serverLimit("MAX_VERIFICATION_UTTERANCE_CHARS"));
+});
+
+test("more than 500 characters of caller speech before name and DOB still verifies", async () => {
+  const context = loadApp();
+  const { state, updateVoiceVerificationFromCallerText, waitForServerVerification,
+    MAX_VERIFICATION_CONTEXT_CHARS } = context.__appTestHooks;
+  startLiveSession(state, "demo-session-long-preamble");
+  const sent = useVerifyEndpoint(context);
+
+  for (let turn = 0; turn < 30; turn += 1) {
+    updateVoiceVerificationFromCallerText(FILLER);
+    assert.ok(state.callerVerificationText.length <= MAX_VERIFICATION_CONTEXT_CHARS);
+  }
+  assert.ok(FILLER.length * 30 > MAX_VERIFICATION_CONTEXT_CHARS);
+  assert.ok(FILLER_WORDS.has(state.callerVerificationText.split(" ")[0]));
+
+  updateVoiceVerificationFromCallerText("Jordan Lee, July 14, 1982");
+  const result = await waitForServerVerification();
+
+  assert.equal(result.status, "verified");
+  assert.equal(state.schedulingCapability, "capability-long");
+  assert.ok(sent.length >= 1);
+  assert.ok(sent.every(text => text.length <= MAX_VERIFICATION_CONTEXT_CHARS));
+});
+
+test("name and DOB more than 500 characters apart still verify", async () => {
+  const context = loadApp();
+  const { state, updateVoiceVerificationFromCallerText, waitForServerVerification } =
+    context.__appTestHooks;
+  startLiveSession(state, "demo-session-split-factors");
+  const sent = useVerifyEndpoint(context);
+  const gap = FILLER.repeat(8);
+  assert.ok(gap.length > 500);
+
+  updateVoiceVerificationFromCallerText("This is Jordan Lee.");
+  updateVoiceVerificationFromCallerText(gap);
+  assert.equal(sent.length, 0);
+  updateVoiceVerificationFromCallerText("My date of birth is July 14, 1982.");
+  const result = await waitForServerVerification();
+
+  assert.equal(result.status, "verified");
+  assert.equal(state.schedulingCapability, "capability-long");
+  assert.equal(sent.length, 1);
+});
+
+test("a rejected verification request is a service failure, not missing evidence", async () => {
+  const context = loadApp();
+  const { state, updateVoiceVerificationFromCallerText, waitForServerVerification } =
+    context.__appTestHooks;
+  startLiveSession(state, "demo-session-rejected");
+  context.fetch = async url => {
+    if (url === "/api/realtime/status") {
+      return { ok: true, status: 200, json: async () => ({ configured: false }) };
+    }
+    return { ok: false, status: 400, json: async () => ({ error: "bad request" }) };
+  };
+
+  updateVoiceVerificationFromCallerText("Jordan Lee, July 14, 1982");
+  const result = await waitForServerVerification();
+
+  assert.equal(result.status, "service_failure");
+  assert.equal(state.schedulingCapability, "");
 });

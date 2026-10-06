@@ -64,6 +64,8 @@ const DOMAIN = window.VOICE_DEMO_DOMAIN;
 // Reasoning-capable models emit tool arguments more slowly; only fall back after a real stall.
 const TOOL_CALL_WATCHDOG_MS = 4000;
 const VERIFICATION_TIMEOUT_MS = 6000;
+// Must equal server.py MAX_VERIFICATION_CONTEXT_CHARS and MAX_VERIFICATION_UTTERANCE_CHARS.
+const MAX_VERIFICATION_CONTEXT_CHARS = 2000;
 const DATA_CHANNEL_OPEN_TIMEOUT_MS = 8000;
 const DEBUG_REALTIME = new URLSearchParams(window.location.search).has("debugRealtime") ||
   window.localStorage?.getItem("voiceDemoDebug") === "1";
@@ -1053,9 +1055,16 @@ async function handleSchedulingToolCall(callId, rawArguments) {
 }
 
 function updateVoiceVerificationFromCallerText(text) {
-  state.callerVerificationText = DOMAIN.normalizeVerificationText(
+  const combined = DOMAIN.normalizeVerificationText(
     `${state.callerVerificationText} ${text}`
   );
+  // Keep only the most recent evidence the server accepts, dropping any word cut by the trim.
+  const start = combined.length - MAX_VERIFICATION_CONTEXT_CHARS;
+  state.callerVerificationText = start <= 0
+    ? combined
+    : combined[start - 1] === " "
+      ? combined.slice(start)
+      : combined.slice(start).replace(/^\S*\s?/, "");
   if (callerProvidedFullVerification()) {
     state.voiceVerified = true;
     syncServerVerification(state.callerVerificationText);
@@ -1114,6 +1123,13 @@ function syncServerVerification(text) {
           state.voiceVerified = true;
         } else if (result.status === "validation_required") {
           clearSchedulingAuthorization();
+        } else if (response.status === 400) {
+          // A rejected request is a service problem, not missing caller evidence.
+          logRealtimeEvent({ type: "verification.sync_rejected", status: response.status });
+          return {
+            status: "service_failure",
+            message: "Voice verification is temporarily unavailable."
+          };
         }
         return result;
       } catch (error) {
