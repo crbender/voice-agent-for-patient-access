@@ -482,7 +482,9 @@ async function checkRealtime() {
     els.realtimeStatus.textContent = data.configured ? "Realtime voice configured" : "Realtime voice not configured";
     els.realtimeDetail.textContent = data.configured
       ? `Deployment: ${data.deployment}. Voice: ${data.voice}. Protocol: ${data.protocol}. Auth: ${data.auth}.`
-      : "Add AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_REALTIME_DEPLOYMENT, and AZURE_OPENAI_API_KEY to .env, then restart server.py.";
+      : data.endpointInsecure
+        ? "AZURE_OPENAI_ENDPOINT must use https:// (or the wss:// Foundry URL). Update .env, then restart server.py."
+        : "Add AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_REALTIME_DEPLOYMENT, and AZURE_OPENAI_API_KEY to .env, then restart server.py.";
     setConnectionState(data.configured ? "ready" : "idle", data.configured ? "Realtime-ready" : "Scripted mode");
   } catch {
     state.realtimeAvailable = false;

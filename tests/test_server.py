@@ -114,6 +114,23 @@ class SchedulingResolutionTests(unittest.TestCase):
 
         self.assertEqual("needs_clarification", result["status"])
 
+    def test_conflicting_meridiem_never_confirms(self):
+        for requested_window, selected_slot_id in (
+            ("Friday at 11:30 PM", ""),
+            ("Friday at 11:30pm", ""),
+            ("Friday at 11:30 PM", "fri-1130"),
+            ("Thursday at 2:15 AM", "thu-1415"),
+        ):
+            with self.subTest(window=requested_window, slot=selected_slot_id):
+                result = server.resolve_scheduling_request(
+                    {
+                        "scenario_key": "access",
+                        "requested_window": requested_window,
+                        "selected_slot_id": selected_slot_id,
+                    }
+                )
+                self.assertEqual("needs_clarification", result["status"])
+
     def test_server_owned_context_ignores_untrusted_fields(self):
         result = server.resolve_scheduling_request(
             {
@@ -380,7 +397,7 @@ class DemoHttpServerTests(unittest.TestCase):
         body = json.dumps(
             {"scenario_key": "access", "requested_window": "Friday morning"}
         ).encode()
-        status, _, _ = self.request(
+        status, headers, _ = self.request(
             "/api/demo-tools/confirm-appointment",
             method="POST",
             data=body,
@@ -391,6 +408,7 @@ class DemoHttpServerTests(unittest.TestCase):
         )
 
         self.assertEqual(403, status)
+        self.assertEqual("close", headers["Connection"])
 
     def test_malformed_origin_is_rejected_without_handler_failure(self):
         status, _, _ = self.request(
@@ -425,7 +443,7 @@ class DemoHttpServerTests(unittest.TestCase):
         self.assertEqual(503, status)
 
     def test_json_content_type_is_required(self):
-        status, _, _ = self.request(
+        status, headers, _ = self.request(
             "/api/demo-tools/confirm-appointment",
             method="POST",
             data=b"{}",
@@ -433,6 +451,39 @@ class DemoHttpServerTests(unittest.TestCase):
         )
 
         self.assertEqual(415, status)
+        self.assertEqual("close", headers["Connection"])
+
+    def test_insecure_endpoints_never_receive_the_api_key(self):
+        for endpoint in (
+            "ws://demo.example.azure.com/openai/v1/realtime",
+            "http://demo.example.azure.com",
+        ):
+            with (
+                self.subTest(endpoint=endpoint),
+                patch.dict(
+                    os.environ,
+                    {
+                        "AZURE_OPENAI_ENDPOINT": endpoint,
+                        "AZURE_OPENAI_API_KEY": "test-key",
+                        "AZURE_OPENAI_REALTIME_DEPLOYMENT": "gpt-realtime-2.1",
+                    },
+                ),
+                patch.object(server, "request_ga_realtime_client_secret") as mint,
+                patch.object(server, "request_legacy_realtime_session") as legacy,
+            ):
+                status, _, payload = self.post_json(
+                    "/api/realtime/session",
+                    {"scenarioKey": "access", "knowledge": {}},
+                )
+                _, _, status_body = self.request("/api/realtime/status")
+                status_payload = json.loads(status_body)
+
+                self.assertEqual(503, status)
+                self.assertIn("https://", payload["error"])
+                mint.assert_not_called()
+                legacy.assert_not_called()
+                self.assertFalse(status_payload["configured"])
+                self.assertTrue(status_payload["endpointInsecure"])
 
     def test_direct_scheduling_posts_require_verified_session_capability(self):
         requests = (
@@ -653,6 +704,33 @@ class RealtimeSessionConstructionTests(unittest.TestCase):
 
         self.assertNotIn("tools", session)
 
+    def test_endpoint_must_resolve_to_https(self):
+        cases = {
+            "wss://demo.openai.azure.com/openai/v1/realtime?model=gpt-realtime-2.1": True,
+            "demo.openai.azure.com": True,
+            "https://demo.openai.azure.com/": True,
+            "WSS://demo.openai.azure.com/openai/v1/realtime": True,
+            "HTTPS://demo.openai.azure.com": True,
+            "https://": False,
+            "ws://demo.openai.azure.com/openai/v1/realtime": False,
+            "http://demo.openai.azure.com": False,
+        }
+        for endpoint, secure in cases.items():
+            with (
+                self.subTest(endpoint=endpoint),
+                patch.dict(
+                    os.environ,
+                    {
+                        "AZURE_OPENAI_ENDPOINT": endpoint,
+                        "AZURE_OPENAI_API_KEY": "test-key",
+                        "AZURE_OPENAI_REALTIME_DEPLOYMENT": "gpt-realtime-2.1",
+                    },
+                ),
+            ):
+                cfg = server.realtime_config()
+                self.assertEqual(secure, cfg["endpoint_secure"])
+                self.assertEqual(secure, cfg["configured"])
+
     def test_client_secret_request_keeps_the_api_key_server_side(self):
         cfg = self.config()
         session = server.build_realtime_session(
@@ -675,13 +753,58 @@ class RealtimeSessionConstructionTests(unittest.TestCase):
             captured["body"] = json.loads(req.data.decode())
             return FakeResponse()
 
-        with patch.object(server, "urlopen", fake_urlopen):
+        with patch.object(server._API_KEY_OPENER, "open", fake_urlopen):
             data = server.request_ga_realtime_client_secret(cfg, session)
 
         self.assertEqual("ephemeral", data["value"])
         self.assertEqual({"session": session}, captured["body"])
         self.assertIn("test-key", captured["headers"].values())
         self.assertNotIn("test-key", json.dumps(captured["body"]))
+
+    def test_api_key_requests_never_follow_redirects(self):
+        from http.server import BaseHTTPRequestHandler
+
+        received = []
+
+        class RedirectHandler(BaseHTTPRequestHandler):
+            def log_message(self, _format, *args):
+                pass
+
+            def do_POST(self):
+                # Read the body first; Windows resets connections closed with unread input.
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                received.append((self.path, self.headers.get("api-key")))
+                self.send_response(302)
+                self.send_header("Location", "/leaked")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            do_GET = do_POST
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            cfg = {
+                **self.config(),
+                "endpoint": f"http://127.0.0.1:{httpd.server_port}",
+            }
+            for request_upstream in (
+                lambda: server.request_ga_realtime_client_secret(cfg, {}),
+                lambda: server.request_legacy_realtime_session(cfg),
+            ):
+                with self.assertRaises(HTTPError) as raised:
+                    request_upstream()
+                self.assertEqual(302, raised.exception.code)
+                raised.exception.close()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
+        self.assertEqual(2, len(received))
+        self.assertEqual(["test-key", "test-key"], [key for _, key in received])
+        self.assertNotIn("/leaked", [path for path, _ in received])
 
 
 class SchedulingLatencyMetadataTests(unittest.TestCase):

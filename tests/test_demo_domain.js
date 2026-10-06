@@ -117,6 +117,64 @@ test("scheduling inference recognizes bounded spoken and clock times", () => {
   );
 });
 
+test("scheduling inference rejects explicit AM/PM conflicts with offered slots", () => {
+  for (const text of [
+    "Friday at 11:30 PM works.",
+    "Friday at 11:30pm works.",
+    "Friday at eleven thirty p.m. works.",
+    "Thursday at 10:45 PM works.",
+    "Thursday at 2:15 a.m. works.",
+    "Friday at 11:30, PM works.",
+    "Friday at 11:30 in the PM works.",
+    "Friday at 11:30 p  m works.",
+    "Thursday at 2:15, AM works.",
+    "Friday at 11:30 at night works.",
+    "Thursday at 10:45 in the evening works.",
+    "Thursday at 2:15 in the morning works.",
+    "Friday at 11:30 this evening works.",
+    "Friday at 11:30 later tonight works.",
+    "Thursday at 2:15 this morning works.",
+    "Thursday at 2:15 (AM) works.",
+    "Thursday at 2:15 before noon works.",
+    "Friday at 11:30 after noon works.",
+    "Thursday AM at 2:15 works.",
+    "Friday at 11:30 AM, or 11:30 PM if that is open."
+  ]) {
+    assert.equal(domain.inferSchedulingWindowFromText(text), "", text);
+  }
+});
+
+test("scheduling inference accepts a matching explicit AM/PM", () => {
+  assert.equal(
+    domain.inferSchedulingWindowFromText("Friday at 11:30 AM works."),
+    "Friday at 11:30 AM"
+  );
+  assert.equal(
+    domain.inferSchedulingWindowFromText("Friday at 11:30am works."),
+    "Friday at 11:30 AM"
+  );
+  assert.equal(
+    domain.inferSchedulingWindowFromText("Thursday at 10:45 a.m. works."),
+    "Thursday at 10:45 AM"
+  );
+  assert.equal(
+    domain.inferSchedulingWindowFromText("Thursday at 2:15 p.m. works."),
+    "Thursday at 2:15 PM"
+  );
+  assert.equal(
+    domain.inferSchedulingWindowFromText("Thursday at 10:45, a morning slot is best."),
+    "Thursday at 10:45 AM"
+  );
+  assert.equal(
+    domain.inferSchedulingWindowFromText("Friday at 11:30 a meeting ends, so that works."),
+    "Friday at 11:30 AM"
+  );
+  assert.equal(
+    domain.inferSchedulingWindowFromText("Thursday at 2:15 in the afternoon works."),
+    "Thursday at 2:15 PM"
+  );
+});
+
 test("verification JSON deadline covers stalled response bodies", async () => {
   let aborted = false;
   const stalledFetch = async (_url, options) => ({

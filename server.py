@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 ROOT = Path(__file__).resolve().parent
@@ -260,9 +260,10 @@ def normalize_endpoint(raw_endpoint):
     endpoint = str(raw_endpoint or "").strip().strip('"').strip("'")
     if not endpoint:
         return ""
-    if endpoint.startswith("wss://"):
+    lowered = endpoint.lower()
+    if lowered.startswith("wss://"):
         endpoint = "https://" + endpoint[len("wss://"):]
-    elif endpoint.startswith("ws://"):
+    elif lowered.startswith("ws://"):
         endpoint = "http://" + endpoint[len("ws://"):]
     elif "://" not in endpoint:
         endpoint = "https://" + endpoint
@@ -290,10 +291,14 @@ def realtime_config():
         vad_silence_ms = int(os.environ.get("REALTIME_VAD_SILENCE_MS", "700"))
     except ValueError:
         vad_silence_ms = 700
-    configured = bool(endpoint and api_key and deployment)
+    # The long-lived API key is sent to this origin, so only HTTPS endpoints are usable.
+    parsed_endpoint = urlsplit(endpoint)
+    endpoint_secure = parsed_endpoint.scheme == "https" and bool(parsed_endpoint.hostname)
+    configured = bool(endpoint and endpoint_secure and api_key and deployment)
     return {
         "endpoint": endpoint,
         "endpoint_normalized": endpoint_normalized,
+        "endpoint_secure": endpoint_secure,
         "deployment": deployment,
         "api_key": api_key,
         "voice": voice,
@@ -761,6 +766,17 @@ def build_browser_session_update(session):
     return {key: value for key, value in session.items() if key not in immutable}
 
 
+class _RejectRedirects(HTTPRedirectHandler):
+    """urllib forwards the api-key header on redirects, possibly to cleartext HTTP."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# API-key-bearing upstream requests never follow redirects.
+_API_KEY_OPENER = build_opener(_RejectRedirects)
+
+
 def request_ga_realtime_client_secret(cfg, session):
     url = f"{cfg['endpoint']}/openai/v1/realtime/client_secrets"
     req = Request(
@@ -772,7 +788,7 @@ def request_ga_realtime_client_secret(cfg, session):
         },
         method="POST",
     )
-    with urlopen(req, timeout=30) as response:
+    with _API_KEY_OPENER.open(req, timeout=30) as response:
         return json.loads(response.read())
 
 
@@ -791,7 +807,7 @@ def request_legacy_realtime_session(cfg):
         },
         method="POST",
     )
-    with urlopen(req, timeout=30) as response:
+    with _API_KEY_OPENER.open(req, timeout=30) as response:
         return json.loads(response.read())
 
 
@@ -1091,10 +1107,12 @@ class DemoHandler(SimpleHTTPRequestHandler):
 
     def _read_json_body(self):
         if self.headers.get_content_type() != "application/json":
+            # The rejected body is never parsed, so the connection cannot be reused.
+            self.close_connection = True
             try:
                 self._discard_request_body(int(self.headers.get("Content-Length", "0")))
             except ValueError:
-                self.close_connection = True
+                pass
             raise RequestValidationError(
                 415, "Content-Type must be application/json."
             )
@@ -1234,6 +1252,7 @@ class DemoHandler(SimpleHTTPRequestHandler):
                 "reasoningEffort": cfg["reasoning_effort"],
                 "vadSilenceMs": cfg["vad_silence_ms"],
                 "endpointNormalized": cfg["endpoint_normalized"],
+                "endpointInsecure": bool(cfg["endpoint"]) and not cfg["endpoint_secure"],
                 "protocol": cfg["protocol"],
                 "auth": "server-side API key" if cfg["api_key"] else "not configured",
                 "supportedRealtimeModels": cfg["supported_models"],
@@ -1246,11 +1265,13 @@ class DemoHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         if not self._origin_allowed():
-            # Discard the rejected body so the 403 header is not lost to a connection reset.
+            # Discard the rejected body so the 403 header is not lost to a connection reset;
+            # the connection cannot be reused because the body is never parsed.
+            self.close_connection = True
             try:
                 self._discard_request_body(int(self.headers.get("Content-Length", "0")))
             except ValueError:
-                self.close_connection = True
+                pass
             self._json(403, {"error": "Origin is not allowed."})
             return
 
@@ -1288,6 +1309,9 @@ class DemoHandler(SimpleHTTPRequestHandler):
             return
 
         cfg = realtime_config()
+        if cfg["endpoint"] and not cfg["endpoint_secure"]:
+            self._json(503, {"error": "AZURE_OPENAI_ENDPOINT must use https:// (or the wss:// Foundry URL). The API key is never sent to an insecure endpoint."})
+            return
         if not cfg["configured"]:
             self._json(503, {"error": "Realtime service not configured. Add AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_REALTIME_DEPLOYMENT, and AZURE_OPENAI_API_KEY to .env."})
             return
@@ -1335,7 +1359,8 @@ class DemoHandler(SimpleHTTPRequestHandler):
         except RequestValidationError as exc:
             self._json(exc.status, {"error": exc.message})
         except HTTPError as exc:
-            self._json(exc.code, self._azure_error(exc))
+            # A rejected upstream redirect is a setup failure, not a redirect for the browser.
+            self._json(exc.code if exc.code >= 400 else 502, self._azure_error(exc))
         except (URLError, TimeoutError, KeyError, json.JSONDecodeError) as exc:
             self.log_error("Realtime session failed: %s", exc)
             self._json(502, {"error": "Realtime session setup failed."})

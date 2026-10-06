@@ -143,6 +143,18 @@
     };
   }
 
+  // Bare "am" is also an ordinary word, so AM/PM tokens only count when attached to a time.
+  function hasMeridiemConflict(text, timePattern, expected) {
+    const pattern = new RegExp(
+      `${timePattern}[\\s,()\\-]*(?:in the\\s+)?([ap])\\.?\\s*m\\.?(?![a-z])`,
+      "g"
+    );
+    for (const match of text.matchAll(pattern)) {
+      if (match[1] !== expected) return true;
+    }
+    return false;
+  }
+
   function inferSchedulingWindowFromText(value) {
     const text = String(value || "").toLowerCase();
     const hasNegation = /\b(?:except|not|cannot|can't|don't|do not|anything but)\b/.test(text);
@@ -151,13 +163,27 @@
     const hasFriday = text.includes("friday");
     if (hasThursday && hasFriday) return "";
 
-    const hasElevenThirty = /\b11[:.]30\b/.test(text) ||
-      /\beleven[- ]thirty\b/.test(text);
-    const hasTenFortyFive = /\b10[:.]45\b/.test(text) ||
-      /\bten forty[- ]five\b/.test(text);
-    const hasTwoFifteen = /\b2[:.]15\b/.test(text) ||
-      /\btwo[- ]fifteen\b/.test(text);
+    const elevenThirty = String.raw`\b(?:11[:.]30(?![\d:])|eleven[- ]thirty\b)`;
+    const tenFortyFive = String.raw`\b(?:10[:.]45(?![\d:])|ten forty[- ]five\b)`;
+    const twoFifteen = String.raw`\b(?:2[:.]15(?![\d:])|two[- ]fifteen\b)`;
+    const hasElevenThirty = new RegExp(elevenThirty).test(text);
+    const hasTenFortyFive = new RegExp(tenFortyFive).test(text);
+    const hasTwoFifteen = new RegExp(twoFifteen).test(text);
     const hasCanonicalTime = hasElevenThirty || hasTenFortyFive || hasTwoFifteen;
+    // An explicitly spoken AM/PM or day period that disagrees with an offered slot makes the
+    // request ambiguous; it must never be normalized onto that slot.
+    const hasMorningCue =
+      /\bmorning\b|\bbefore noon\b|\ba\.\s*m\.|\b(?:thursday|friday)\s+a\.?\s*m\b/.test(text);
+    const hasLaterCue = /\b(?:afternoon|after noon|evening|night|tonight)\b|\bp\.?\s*m\b/.test(text);
+    if (
+      hasMeridiemConflict(text, elevenThirty, "a") ||
+      hasMeridiemConflict(text, tenFortyFive, "a") ||
+      hasMeridiemConflict(text, twoFifteen, "p") ||
+      (hasLaterCue && (hasElevenThirty || hasTenFortyFive)) ||
+      (hasMorningCue && hasTwoFifteen)
+    ) {
+      return "";
+    }
 
     if (hasFriday && hasElevenThirty) {
       return "Friday at 11:30 AM";

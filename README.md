@@ -132,7 +132,7 @@ PORT=8787
 GENERATE_CONVERSATION_SCRIPT=0
 ```
 
-`AZURE_OPENAI_ENDPOINT` must be the **base resource origin**, not the realtime WebSocket URL shown in the Foundry playground. If you paste `wss://YOUR-RESOURCE.openai.azure.com/openai/v1/realtime?model=...`, the server normalizes it to `https://YOUR-RESOURCE.openai.azure.com` and reports `endpointNormalized` on the status endpoint.
+`AZURE_OPENAI_ENDPOINT` must be the **base resource origin**, not the realtime WebSocket URL shown in the Foundry playground. If you paste `wss://YOUR-RESOURCE.openai.azure.com/openai/v1/realtime?model=...`, the server normalizes it to `https://YOUR-RESOURCE.openai.azure.com` and reports `endpointNormalized` on the status endpoint. Only HTTPS endpoints are accepted: `http://` and `ws://` endpoints are rejected before any upstream request, so the API key is never sent over cleartext.
 
 3. Restart server and refresh browser.
 
@@ -173,6 +173,12 @@ name and date of birth both match, the server issues a short-lived, session-boun
 capability that `/api/demo-tools/confirm-appointment` requires. The capability expires and must be
 renewed with fresh caller evidence. It is a workflow guard for a demo over public synthetic data,
 not identity proof, and it is never exposed to the model.
+
+The demo assumes the caller is already authenticated by the simulated MyHealth portal sign-in, so
+each scenario's signed-in profile is part of Riley's grounding. Voice-channel verification is a
+conversational step that Riley is instructed to complete before account-specific answers in every
+scenario; the server-enforced guard above applies only to the scheduling action, because revenue-cycle
+and multilingual flows expose no tools or server-side actions to gate.
 
 Automated mock rescheduling is the primary demo flow. Callback tasks are fallback behavior only when the mock scheduling system cannot complete the request or staff judgment is needed.
 
