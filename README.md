@@ -97,7 +97,7 @@ The second command should print nothing. Only `.env.example` should appear in tr
 python3 server.py
 ```
 
-Open http://127.0.0.1:8787 and run the scripted demo.
+Open http://127.0.0.1:8787 and run the scripted demo. If port 8787 is already in use, the server exits with a platform-specific hint for stopping the previous instance; it never shares the port with a stale server.
 
 For the most consistent walkthrough, start in scripted mode and use the patient access scenario first.
 
@@ -127,6 +127,10 @@ REALTIME_TRANSCRIPTION_MODEL=whisper-1
 REALTIME_REASONING_EFFORT=low
 # Silence before the model takes its turn. Lower feels snappier; raise in noisy rooms.
 REALTIME_VAD_SILENCE_MS=700
+# Optional GA-only tuning; defaults keep today's behavior.
+# REALTIME_TURN_DETECTION=server_vad   # or semantic_vad
+# REALTIME_VAD_EAGERNESS=auto          # semantic_vad only: auto | low | medium | high
+# REALTIME_NOISE_REDUCTION=off         # or near_field | far_field
 PORT=8787
 # Optional: generate ignored conversation-script.md on server startup.
 GENERATE_CONVERSATION_SCRIPT=0
@@ -147,11 +151,23 @@ The primary live voice path now targets the `gpt-realtime-2.1` deployment with G
 - `REALTIME_REASONING_EFFORT` defaults to `low`, the recommended starting point for responsive voice agents. Raise it only if scheduling or escalation decisions need more deliberation.
 - `AZURE_OPENAI_REALTIME_VOICE` defaults to `marin`, this model's native default. `alloy`, `cedar`, `sage`, `shimmer`, and `verse` are also available.
 - `REALTIME_VAD_SILENCE_MS` defaults to `700`, which keeps turn-taking brisk on camera. Raise it toward `1000` in noisy rooms.
+- `REALTIME_TURN_DETECTION=semantic_vad` (with `REALTIME_VAD_EAGERNESS` of `auto`, `low`, `medium`, or `high`) waits for the caller to finish a thought instead of a fixed silence, which helps when callers pause mid-date-of-birth. `REALTIME_NOISE_REDUCTION=near_field` or `far_field` filters headset or laptop/room microphones before turn detection. Both are off by default, apply only to the GA path (legacy sessions always use `server_vad` with no noise reduction), and invalid values fall back to the defaults. `/api/realtime/status` reports the `turnDetection` and `noiseReduction` actually in effect for the configured protocol.
+- `REALTIME_TRANSCRIPTION_MODEL` drives the caller transcript, which voice verification and the action packet rely on. On Azure it must be the name of an existing transcription deployment in your resource. `whisper-1` is the default; for better Spanish and name/date accuracy, deploy `gpt-4o-transcribe` in Foundry and set this variable to that deployment name.
 - The model emits short spoken preambles (for example, "I'll check the scheduling system for Thursday") before tool calls. This is expected behavior and covers scheduling latency.
 
-The server builds one authoritative session object that both mints the client secret and drives the browser `session.update`, so audio, turn detection, tools, and reasoning cannot drift apart. `model` and `reasoning` are deliberately excluded from the browser `session.update`, because the Realtime service only accepts them when the session is created and otherwise returns `Unsupported option for this model.`
+The server builds one authoritative session object that both mints the client secret and drives the browser `session.update`, so audio, turn detection, tools, and reasoning cannot drift apart. `model` and `reasoning` are deliberately excluded from the browser `session.update`, because the Realtime service only accepts them when the session is created and otherwise returns `Unsupported option for this model.` For older `legacy-webrtc` deployments the server returns an equivalent update with the same instructions, voice, transcription, and silence setting, but without the scheduling tool or the GA-only tuning.
 
-The GA WebRTC path uses `/openai/v1/realtime/client_secrets` for short-lived session credentials and `/openai/v1/realtime/calls` for the browser SDP exchange. The local demo keeps the data-channel event stream unfiltered so the browser can receive Realtime function-call events and return `function_call_output` for the scheduling tool.
+The browser never sends `instructions` on `response.create`. The Realtime API treats response-level instructions as a replacement for the session prompt for that response, which would drop the persona, verification, bilingual, and safety rules exactly when Riley reads out scheduling results. Instead, turn-specific guidance travels in the tool result as `response_guidance`, and the opening turn is a short factual system item followed by a bare `response.create`.
+
+The browser requests microphone access while the server mints the session, so the permission prompt and token request overlap. A microphone stream is only kept once the current call adopts it; any failed, cancelled, or superseded startup stops it.
+
+The GA WebRTC path uses `/openai/v1/realtime/client_secrets` for short-lived session credentials and `/openai/v1/realtime/calls` for the browser SDP exchange. The local demo keeps the data-channel event stream unfiltered so the browser can receive Realtime function-call events and return `function_call_output` for the scheduling tool. The page's Content Security Policy only allows browser connections to the local server and the configured Azure Realtime origin; the same validated URL builder produces both the CSP entry and the `callsUrl`.
+
+### Presenting a live call
+
+- Start the live call from either view. In the patient assistant panel, **Executive view** keeps the conversation running and moves it to the executive console, where the action packet and KPIs are visible. Switching back to the patient view reopens the panel with the same call. Closing the panel, Reset, or switching scenarios still ends the call.
+- During a live call the KPIs advance at the same milestones as the scripted run (connected, verified, options offered, confirmed), and the language count moves to 2 when the caller asks for Spanish. The action packet shows validation, language, and caregiver context until scheduling results take over. Patient access counts as validated only after the server issues its scheduling capability.
+- Riley's transcript lines appear when each response finishes; a line cut off by the caller, or by ending the call, is marked "(interrupted)".
 
 Realtime diagnostics are available from the browser console with `voiceDemoDiagnostics()`. To also mirror realtime event logs to the console, open the page with `?debugRealtime` or set `localStorage.voiceDemoDebug = "1"`.
 

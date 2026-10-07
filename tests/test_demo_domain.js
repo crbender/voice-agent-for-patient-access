@@ -240,3 +240,67 @@ test("fresh-load assistant panel is inert while retaining focus-trap fallback", 
     /<aside class="assistant-panel"[^>]*aria-hidden="true"[^>]*tabindex="-1"[^>]*inert>/
   );
 });
+
+test("conversation hints follow the latest affirmed or denied mention", () => {
+  const spanish = { languagePreference: "English first, Spanish second" };
+  const cases = [
+    ["Can you do English and then Spanish for my mom?", spanish],
+    ["Prefiero español, por favor.", spanish],
+    ["My mom is driving me there.", { caregiverContext: "mother driving" }],
+    ["My mother drove me last time.", { caregiverContext: "mother driving" }],
+    ["No Spanish needed.", { languagePreference: "" }],
+    ["I don't need Spanish.", { languagePreference: "" }],
+    ["I do not speak Spanish.", { languagePreference: "" }],
+    ["Spanish? No, I do not need Spanish.", { languagePreference: "" }],
+    ["I speak Spanish, but I want English only.", { languagePreference: "" }],
+    ["I don't need English only; Spanish please.", spanish],
+    ["My mom cannot drive me.", { caregiverContext: "" }],
+    ["My mom can't drive this week.", { caregiverContext: "" }],
+    ["My mom is driving me, actually, not this time.", { caregiverContext: "" }],
+    ["My mom cannot drive, but my sister is driving me.", { caregiverContext: "" }],
+    ["My mom is not driving; I am driving myself.", { caregiverContext: "" }],
+    ["My mom cannot bring me, but my friend will give me a ride.", { caregiverContext: "" }],
+    ["My sister is driving me, and my mom is coming along.", {}],
+    ["My mom will be driving me.", { caregiverContext: "mother driving" }],
+    ["My mom has an appointment too.", {}],
+    ["Actually English only, please.", { languagePreference: "" }],
+    ["Actually, not Thursday.", {}],
+    ["Friday morning works best.", {}]
+  ];
+  for (const [text, expected] of cases) {
+    assert.deepEqual(domain.detectConversationHints(text), expected, text);
+  }
+});
+
+function trackedStream() {
+  const track = { stopped: false, stop() { this.stopped = true; } };
+  return { track, stream: { getTracks: () => [track] } };
+}
+
+test("early microphone release stops a stream that resolves later", async () => {
+  let resolveStream;
+  const microphone = domain.requestEarlyMicrophone({
+    getUserMedia: () => new Promise(resolve => { resolveStream = resolve; })
+  }, { audio: true });
+  microphone.release();
+  const { track, stream } = trackedStream();
+  resolveStream(stream);
+  await microphone.promise;
+  assert.equal(track.stopped, true);
+});
+
+test("an adopted early microphone stream is never stopped by release", async () => {
+  const { track, stream } = trackedStream();
+  const microphone = domain.requestEarlyMicrophone({ getUserMedia: async () => stream }, {});
+  assert.equal(microphone.adopt(await microphone.promise), stream);
+  microphone.release();
+  assert.equal(track.stopped, false);
+});
+
+test("early microphone failures reject when awaited, including synchronous throws", async () => {
+  const microphone = domain.requestEarlyMicrophone({
+    getUserMedia() { throw new Error("NotAllowedError"); }
+  }, {});
+  await assert.rejects(microphone.promise, /NotAllowedError/);
+  microphone.release();
+});

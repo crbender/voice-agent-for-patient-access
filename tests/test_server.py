@@ -390,6 +390,8 @@ class DemoHttpServerTests(unittest.TestCase):
             session_update["audio"]["input"]["turn_detection"]["silence_duration_ms"],
         )
         self.assertNotIn("test-key", json.dumps(payload))
+        self.assertNotIn("instructions", payload)
+        self.assertNotIn("tools", payload)
         return payload["demoSessionId"]
 
     def verify_live_demo_session(self, demo_session_id, verification_text):
@@ -426,14 +428,112 @@ class DemoHttpServerTests(unittest.TestCase):
                     self.assertEqual(404, status)
 
     def test_security_headers_allow_azure_and_microphone(self):
-        status, headers, _ = self.request("/")
+        with patch.dict(
+            os.environ,
+            {
+                "AZURE_OPENAI_ENDPOINT": "https://demo.openai.azure.com",
+                "AZURE_OPENAI_API_KEY": "test-key",
+                "AZURE_OPENAI_REALTIME_DEPLOYMENT": "gpt-realtime-2.1",
+                "AZURE_OPENAI_REALTIME_PROTOCOL": "ga-webrtc",
+            },
+        ):
+            status, headers, _ = self.request("/")
 
         self.assertEqual(200, status)
         self.assertIn(
-            "connect-src 'self' https:", headers["Content-Security-Policy"]
+            "connect-src 'self' https://demo.openai.azure.com;",
+            headers["Content-Security-Policy"],
         )
+        self.assertNotIn(" https:;", headers["Content-Security-Policy"])
         self.assertEqual("microphone=(self)", headers["Permissions-Policy"])
         self.assertEqual("nosniff", headers["X-Content-Type-Options"])
+
+    def test_csp_allows_only_self_when_realtime_is_not_configured(self):
+        with patch.dict(
+            os.environ, {"AZURE_OPENAI_ENDPOINT": "", "AZURE_OPENAI_API_KEY": ""}
+        ):
+            _, headers, _ = self.request("/")
+
+        self.assertIn("connect-src 'self';", headers["Content-Security-Policy"])
+
+    def test_csp_contains_the_calls_url_origin_for_both_protocols(self):
+        fake_ga = {"value": "token", "id": "sess"}
+        fake_legacy = {"client_secret": {"value": "token"}, "id": "sess"}
+        for protocol, expected_origin in (
+            ("ga-webrtc", "https://demo.openai.azure.com"),
+            ("legacy-webrtc", "https://eastus2.realtimeapi-preview.ai.azure.com"),
+        ):
+            with (
+                self.subTest(protocol=protocol),
+                patch.dict(
+                    os.environ,
+                    {
+                        "AZURE_OPENAI_ENDPOINT": "https://demo.openai.azure.com",
+                        "AZURE_OPENAI_API_KEY": "test-key",
+                        "AZURE_OPENAI_REALTIME_DEPLOYMENT": "gpt-realtime-2.1",
+                        "AZURE_OPENAI_REALTIME_PROTOCOL": protocol,
+                        "AZURE_OPENAI_REALTIME_REGION": "eastus2",
+                    },
+                ),
+                patch.object(server, "request_ga_realtime_client_secret", return_value=fake_ga),
+                patch.object(server, "request_legacy_realtime_session", return_value=fake_legacy),
+            ):
+                status, headers, payload = self.post_json(
+                    "/api/realtime/session", {"scenarioKey": "access", "knowledge": {}}
+                )
+                calls_origin = "{0.scheme}://{0.netloc}".format(
+                    server.urlsplit(payload["callsUrl"])
+                )
+
+                self.assertEqual(200, status)
+                self.assertEqual(expected_origin, calls_origin)
+                self.assertIn(
+                    f"connect-src 'self' {calls_origin};",
+                    headers["Content-Security-Policy"],
+                )
+
+    def test_status_reports_tuning_actually_in_effect(self):
+        tuning = {
+            "AZURE_OPENAI_ENDPOINT": "https://demo.openai.azure.com",
+            "AZURE_OPENAI_API_KEY": "test-key",
+            "REALTIME_TURN_DETECTION": "semantic_vad",
+            "REALTIME_NOISE_REDUCTION": "far_field",
+            "AZURE_OPENAI_REALTIME_REGION": "eastus2",
+        }
+        for protocol, expected in (
+            ("ga-webrtc", ("semantic_vad", "far_field")),
+            ("legacy-webrtc", ("server_vad", "off")),
+        ):
+            with (
+                self.subTest(protocol=protocol),
+                patch.dict(os.environ, {**tuning, "AZURE_OPENAI_REALTIME_PROTOCOL": protocol}),
+            ):
+                _, _, body = self.request("/api/realtime/status")
+                payload = json.loads(body)
+                self.assertEqual(expected, (payload["turnDetection"], payload["noiseReduction"]))
+
+    def test_invalid_legacy_region_is_rejected_before_minting(self):
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AZURE_OPENAI_ENDPOINT": "https://demo.openai.azure.com",
+                    "AZURE_OPENAI_API_KEY": "test-key",
+                    "AZURE_OPENAI_REALTIME_DEPLOYMENT": "gpt-realtime-1.5",
+                    "AZURE_OPENAI_REALTIME_PROTOCOL": "legacy-webrtc",
+                    "AZURE_OPENAI_REALTIME_REGION": "evil.example.com/x",
+                },
+            ),
+            patch.object(server, "request_legacy_realtime_session") as legacy,
+        ):
+            status, headers, payload = self.post_json(
+                "/api/realtime/session", {"scenarioKey": "access", "knowledge": {}}
+            )
+
+        self.assertEqual(503, status)
+        self.assertIn("AZURE_OPENAI_REALTIME_REGION", payload["error"])
+        self.assertIn("connect-src 'self';", headers["Content-Security-Policy"])
+        legacy.assert_not_called()
 
     def test_status_response_is_not_cached_or_endpoint_disclosing(self):
         status, headers, body = self.request("/api/realtime/status")
@@ -782,6 +882,132 @@ class RealtimeSessionConstructionTests(unittest.TestCase):
                 self.assertEqual(secure, cfg["endpoint_secure"])
                 self.assertEqual(secure, cfg["configured"])
 
+    def test_endpoints_with_credentials_or_bad_ports_are_not_secure(self):
+        for endpoint in (
+            "https://user:pass@demo.openai.azure.com",
+            "https://demo.openai.azure.com:notaport",
+            "https://demo.openai.azure.com:99999",
+            "http://demo.openai.azure.com",
+            "",
+        ):
+            with self.subTest(endpoint=endpoint):
+                self.assertFalse(server.is_secure_endpoint(endpoint))
+        self.assertTrue(server.is_secure_endpoint("https://demo.openai.azure.com:443"))
+
+    def config_with(self, **overrides):
+        env = {
+            "AZURE_OPENAI_ENDPOINT": "https://example.openai.azure.com",
+            "AZURE_OPENAI_API_KEY": "test-key",
+            "AZURE_OPENAI_REALTIME_DEPLOYMENT": "gpt-realtime-2.1",
+            "REALTIME_TURN_DETECTION": "",
+            "REALTIME_VAD_EAGERNESS": "",
+            "REALTIME_NOISE_REDUCTION": "",
+            **overrides,
+        }
+        with patch.dict(os.environ, env):
+            return server.realtime_config()
+
+    def test_default_turn_detection_is_unchanged_server_vad(self):
+        session = server.build_realtime_session(
+            self.config_with(), {"scenarioKey": "access"}, "instructions"
+        )
+
+        self.assertEqual(
+            {
+                "transcription": {"model": "whisper-1"},
+                "turn_detection": {
+                    "type": "server_vad",
+                    "threshold": 0.35,
+                    "prefix_padding_ms": 500,
+                    "silence_duration_ms": 700,
+                    "create_response": True,
+                },
+            },
+            session["audio"]["input"],
+        )
+
+    def test_semantic_vad_and_noise_reduction_are_opt_in(self):
+        cfg = self.config_with(
+            REALTIME_TURN_DETECTION="semantic_vad",
+            REALTIME_VAD_EAGERNESS="low",
+            REALTIME_NOISE_REDUCTION="far_field",
+        )
+        session = server.build_realtime_session(cfg, {"scenarioKey": "access"}, "x")
+
+        self.assertEqual(
+            {
+                "transcription": {"model": "whisper-1"},
+                "turn_detection": {
+                    "type": "semantic_vad",
+                    "eagerness": "low",
+                    "create_response": True,
+                },
+                "noise_reduction": {"type": "far_field"},
+            },
+            session["audio"]["input"],
+        )
+
+    def test_invalid_tuning_values_fall_back_to_defaults(self):
+        cfg = self.config_with(
+            REALTIME_TURN_DETECTION="magic",
+            REALTIME_VAD_EAGERNESS="extreme",
+            REALTIME_NOISE_REDUCTION="studio",
+        )
+
+        self.assertEqual("server_vad", cfg["turn_detection"])
+        self.assertEqual("auto", cfg["vad_eagerness"])
+        self.assertEqual("", cfg["noise_reduction"])
+
+    def test_legacy_update_reproduces_the_former_browser_fallback(self):
+        cfg = self.config_with(
+            AZURE_OPENAI_REALTIME_PROTOCOL="legacy-webrtc",
+            REALTIME_TURN_DETECTION="semantic_vad",
+            REALTIME_NOISE_REDUCTION="near_field",
+        )
+        for scenario_key in ("access", "revenue", "multilingual"):
+            with self.subTest(scenario=scenario_key):
+                instructions = f"instructions for {scenario_key}"
+                update = server.build_legacy_session_update(cfg, instructions)
+                self.assertEqual(
+                    {
+                        "type": "realtime",
+                        "instructions": instructions,
+                        "tools": [],
+                        "tool_choice": "auto",
+                        "output_modalities": ["audio"],
+                        "audio": {
+                            "input": {
+                                "transcription": {"model": "whisper-1"},
+                                "turn_detection": {
+                                    "type": "server_vad",
+                                    "threshold": 0.35,
+                                    "prefix_padding_ms": 500,
+                                    "silence_duration_ms": 700,
+                                    "create_response": True,
+                                },
+                            },
+                            "output": {"voice": "marin"},
+                        },
+                    },
+                    update,
+                )
+
+    def test_legacy_region_must_be_a_hostname_label(self):
+        for region, valid in (
+            ("eastus2", True),
+            ("sweden-central", True),
+            ("evil.example.com", False),
+            ("eastus2/x", False),
+            ("", False),
+        ):
+            with self.subTest(region=region):
+                cfg = self.config_with(
+                    AZURE_OPENAI_REALTIME_PROTOCOL="legacy-webrtc",
+                    AZURE_OPENAI_REALTIME_REGION=region,
+                )
+                self.assertEqual(valid, cfg["region_valid"])
+                self.assertEqual(valid, cfg["configured"])
+
     def test_client_secret_request_keeps_the_api_key_server_side(self):
         cfg = self.config()
         session = server.build_realtime_session(
@@ -874,3 +1100,36 @@ class SchedulingLatencyMetadataTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class PortBindingTests(unittest.TestCase):
+    def test_port_reuse_is_disabled_on_windows(self):
+        self.assertEqual(os.name != "nt", server._ReusableServer.allow_reuse_address)
+
+    def test_address_in_use_is_detected_across_platforms(self):
+        import errno as errno_module
+
+        class WinError(OSError):
+            winerror = 10048
+
+        self.assertTrue(server.is_address_in_use(OSError(errno_module.EADDRINUSE, "in use")))
+        self.assertTrue(server.is_address_in_use(OSError(10048, "in use")))
+        self.assertTrue(server.is_address_in_use(WinError(None, "in use")))
+        self.assertFalse(server.is_address_in_use(OSError(errno_module.EACCES, "denied")))
+
+    def test_second_server_on_a_busy_port_fails_instead_of_sharing_it(self):
+        first = server.create_demo_server(0)
+        port = first.server_address[1]
+        second = None
+        try:
+            with self.assertRaises(OSError) as raised:
+                second = server.create_demo_server(port)
+            self.assertTrue(server.is_address_in_use(raised.exception))
+        finally:
+            first.server_close()
+            if second is not None:
+                second.server_close()
+
+    def test_port_hint_matches_the_platform(self):
+        hint = server.port_in_use_hint(8787)
+        self.assertIn("8787", hint)
+        self.assertIn("Get-NetTCPConnection" if os.name == "nt" else "lsof", hint)

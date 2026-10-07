@@ -13,10 +13,15 @@ Environment variables, automatically loaded from .env when present:
   REALTIME_TRANSCRIPTION_MODEL      Optional, defaults to whisper-1
   REALTIME_REASONING_EFFORT         Optional gpt-realtime-2.1 reasoning: minimal|low|medium|high, defaults to low
   REALTIME_VAD_SILENCE_MS           Optional end-of-turn silence in ms, defaults to 700
+  REALTIME_TURN_DETECTION           Optional GA turn detection: server_vad (default) | semantic_vad
+  REALTIME_VAD_EAGERNESS            Optional semantic_vad eagerness: auto (default) | low | medium | high
+  REALTIME_NOISE_REDUCTION          Optional GA input noise reduction: off (default) | near_field | far_field
   PORT                              Optional, defaults to 8787
 """
 
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+import errno
+import functools
 import hashlib
 import json
 import os
@@ -291,10 +296,25 @@ def realtime_config():
         vad_silence_ms = int(os.environ.get("REALTIME_VAD_SILENCE_MS", "700"))
     except ValueError:
         vad_silence_ms = 700
+    turn_detection = os.environ.get("REALTIME_TURN_DETECTION", "server_vad").strip().lower()
+    if turn_detection not in ("server_vad", "semantic_vad"):
+        turn_detection = "server_vad"
+    vad_eagerness = os.environ.get("REALTIME_VAD_EAGERNESS", "auto").strip().lower()
+    if vad_eagerness not in ("auto", "low", "medium", "high"):
+        vad_eagerness = "auto"
+    noise_reduction = os.environ.get("REALTIME_NOISE_REDUCTION", "off").strip().lower()
+    if noise_reduction not in ("near_field", "far_field"):
+        noise_reduction = ""
     # The long-lived API key is sent to this origin, so only HTTPS endpoints are usable.
-    parsed_endpoint = urlsplit(endpoint)
-    endpoint_secure = parsed_endpoint.scheme == "https" and bool(parsed_endpoint.hostname)
-    configured = bool(endpoint and endpoint_secure and api_key and deployment)
+    endpoint_secure = is_secure_endpoint(endpoint)
+    region_valid = bool(REGION_LABEL.fullmatch(region))
+    configured = bool(
+        endpoint
+        and endpoint_secure
+        and api_key
+        and deployment
+        and (protocol != "legacy-webrtc" or region_valid)
+    )
     return {
         "endpoint": endpoint,
         "endpoint_normalized": endpoint_normalized,
@@ -304,13 +324,65 @@ def realtime_config():
         "voice": voice,
         "protocol": protocol,
         "region": region,
+        "region_valid": region_valid,
         "api_version": api_version,
         "transcription_model": transcription_model,
         "reasoning_effort": reasoning_effort,
         "vad_silence_ms": vad_silence_ms,
+        "turn_detection": turn_detection,
+        "vad_eagerness": vad_eagerness,
+        "noise_reduction": noise_reduction,
         "configured": configured,
         "supported_models": SUPPORTED_REALTIME_MODELS,
     }
+
+
+REGION_LABEL = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+def is_secure_endpoint(endpoint):
+    if not endpoint:
+        return False
+    parsed = urlsplit(endpoint)
+    try:
+        parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and bool(parsed.hostname)
+        and parsed.username is None
+        and parsed.password is None
+    )
+
+
+def realtime_calls_url(cfg):
+    """The single source for where the browser posts its SDP offer.
+
+    The CSP connect-src is derived from this URL, so the two cannot drift apart.
+    """
+    if not cfg["configured"]:
+        return None
+    if cfg["protocol"] == "legacy-webrtc":
+        return (
+            f"https://{cfg['region']}.realtimeapi-preview.ai.azure.com/v1/realtimertc"
+            f"?model={cfg['deployment']}"
+        )
+    return f"{cfg['endpoint']}/openai/v1/realtime/calls"
+
+
+def content_security_policy(cfg):
+    connect_sources = ["'self'"]
+    calls_url = realtime_calls_url(cfg)
+    if calls_url:
+        parsed = urlsplit(calls_url)
+        connect_sources.append(f"{parsed.scheme}://{parsed.netloc}")
+    return (
+        "default-src 'self'; script-src 'self'; style-src 'self'; "
+        f"img-src 'self' data:; connect-src {' '.join(connect_sources)}; "
+        "media-src 'self' blob:; object-src 'none'; base-uri 'none'; "
+        "frame-ancestors 'none'; form-action 'self'"
+    )
 
 
 class RequestValidationError(ValueError):
@@ -353,16 +425,22 @@ DENIAL_FILLERS = ("really", "actually", "even", "named", "called", "the")
 DOB_DENIAL_FILLERS = ("born", "on")
 
 
-def phrase_stance(normalized_text, phrase, extra_fillers=()):
-    normalized_phrase = normalize_verification_text(phrase)
-    if not normalized_phrase:
-        return -1, ""
+@functools.lru_cache(maxsize=64)
+def _denial_patterns(extra_fillers):
     fillers = "|".join(re.escape(word) for word in (*DENIAL_FILLERS, *extra_fillers))
     denied_before = re.compile(rf"(?:^|\s){NEGATION}(?:\s+(?:{fillers})){{0,4}}\s$")
     denied_after = re.compile(
         rf"^\s(?:(?:{fillers})\s+){{0,4}}"
         r"(?:(?:is|was|are)\s+(?:not|never)|isn't|isnt|wasn't|wasnt|ain't|aint)(?:\s|$)"
     )
+    return denied_before, denied_after
+
+
+def phrase_stance(normalized_text, phrase, extra_fillers=()):
+    normalized_phrase = normalize_verification_text(phrase)
+    if not normalized_phrase:
+        return -1, ""
+    denied_before, denied_after = _denial_patterns(tuple(extra_fillers))
     text = f" {normalized_text} "
     needle = f" {normalized_phrase} "
     latest = (-1, "")
@@ -765,28 +843,41 @@ def build_realtime_instructions(request_body):
     ).strip()
 
 
+def build_turn_detection(cfg):
+    if cfg.get("turn_detection") == "semantic_vad":
+        return {
+            "type": "semantic_vad",
+            "eagerness": cfg.get("vad_eagerness") or "auto",
+            "create_response": True,
+        }
+    return {
+        "type": "server_vad",
+        "threshold": 0.35,
+        "prefix_padding_ms": 500,
+        "silence_duration_ms": cfg["vad_silence_ms"],
+        "create_response": True,
+    }
+
+
 def build_realtime_session(cfg, request_body, instructions):
     """Build the authoritative Realtime session config.
 
     The same object mints the client secret and drives the browser session.update,
     so audio, turn-taking, reasoning, and tool config cannot drift apart.
     """
+    audio_input = {
+        "transcription": {"model": cfg["transcription_model"]},
+        "turn_detection": build_turn_detection(cfg),
+    }
+    if cfg.get("noise_reduction"):
+        audio_input["noise_reduction"] = {"type": cfg["noise_reduction"]}
     session = {
         "type": "realtime",
         "model": cfg["deployment"],
         "instructions": instructions,
         "output_modalities": ["audio"],
         "audio": {
-            "input": {
-                "transcription": {"model": cfg["transcription_model"]},
-                "turn_detection": {
-                    "type": "server_vad",
-                    "threshold": 0.35,
-                    "prefix_padding_ms": 500,
-                    "silence_duration_ms": cfg["vad_silence_ms"],
-                    "create_response": True,
-                },
-            },
+            "input": audio_input,
             "output": {
                 "voice": cfg["voice"],
             },
@@ -798,6 +889,34 @@ def build_realtime_session(cfg, request_body, instructions):
         session["tools"] = [SCHEDULING_TOOL]
         session["tool_choice"] = "auto"
     return session
+
+
+def build_legacy_session_update(cfg, instructions):
+    """Session update for preview deployments, which mint only model and voice.
+
+    This reproduces the browser's former inline fallback exactly; optional GA tuning
+    (semantic VAD, noise reduction) and the scheduling tool are not applied here.
+    """
+    return {
+        "type": "realtime",
+        "instructions": instructions,
+        "tools": [],
+        "tool_choice": "auto",
+        "output_modalities": ["audio"],
+        "audio": {
+            "input": {
+                "transcription": {"model": cfg["transcription_model"] or "whisper-1"},
+                "turn_detection": {
+                    "type": "server_vad",
+                    "threshold": 0.35,
+                    "prefix_padding_ms": 500,
+                    "silence_duration_ms": cfg["vad_silence_ms"],
+                    "create_response": True,
+                },
+            },
+            "output": {"voice": cfg["voice"] or "marin"},
+        },
+    }
 
 
 def build_browser_session_update(session):
@@ -1126,13 +1245,7 @@ class DemoHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(ROOT), **kwargs)
 
     def end_headers(self):
-        self.send_header(
-            "Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "img-src 'self' data:; connect-src 'self' https:; "
-            "media-src 'self' blob:; object-src 'none'; base-uri 'none'; "
-            "frame-ancestors 'none'; form-action 'self'",
-        )
+        self.send_header("Content-Security-Policy", content_security_policy(realtime_config()))
         self.send_header("Permissions-Policy", "microphone=(self)")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -1296,6 +1409,15 @@ class DemoHandler(SimpleHTTPRequestHandler):
                 "transcriptionModel": cfg["transcription_model"],
                 "reasoningEffort": cfg["reasoning_effort"],
                 "vadSilenceMs": cfg["vad_silence_ms"],
+                # Legacy sessions ignore the GA-only tuning, so report what is in effect.
+                "turnDetection": (
+                    "server_vad" if cfg["protocol"] == "legacy-webrtc" else cfg["turn_detection"]
+                ),
+                "noiseReduction": (
+                    "off"
+                    if cfg["protocol"] == "legacy-webrtc"
+                    else cfg["noise_reduction"] or "off"
+                ),
                 "endpointNormalized": cfg["endpoint_normalized"],
                 "endpointInsecure": bool(cfg["endpoint"]) and not cfg["endpoint_secure"],
                 "protocol": cfg["protocol"],
@@ -1358,26 +1480,25 @@ class DemoHandler(SimpleHTTPRequestHandler):
             self._json(503, {"error": "AZURE_OPENAI_ENDPOINT must use https:// (or the wss:// Foundry URL). The API key is never sent to an insecure endpoint."})
             return
         if not cfg["configured"]:
+            if cfg["protocol"] == "legacy-webrtc" and not cfg["region_valid"]:
+                self._json(503, {"error": "AZURE_OPENAI_REALTIME_REGION must be a valid Azure region name, such as eastus2."})
+                return
             self._json(503, {"error": "Realtime service not configured. Add AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_REALTIME_DEPLOYMENT, and AZURE_OPENAI_API_KEY to .env."})
             return
 
         try:
             scenario_key = scenario_key_from_request(request_body)
             instructions = build_realtime_instructions(request_body)
-            session_update = None
+            calls_url = realtime_calls_url(cfg)
             if cfg["protocol"] == "legacy-webrtc":
                 data = request_legacy_realtime_session(cfg)
                 ephemeral_token = data.get("client_secret", {}).get("value")
-                calls_url = (
-                    f"https://{cfg['region']}.realtimeapi-preview.ai.azure.com/v1/realtimertc"
-                    f"?model={cfg['deployment']}"
-                )
                 session_id = data.get("id")
+                session_update = build_legacy_session_update(cfg, instructions)
             else:
                 session = build_realtime_session(cfg, request_body, instructions)
                 data = request_ga_realtime_client_secret(cfg, session)
                 ephemeral_token = data.get("value")
-                calls_url = f"{cfg['endpoint']}/openai/v1/realtime/calls"
                 session_id = data.get("id")
                 session_update = build_browser_session_update(session)
 
@@ -1396,9 +1517,7 @@ class DemoHandler(SimpleHTTPRequestHandler):
                 "sessionId": session_id,
                 "demoSessionId": demo_session_id,
                 "demoSessionExpiresIn": DEMO_SESSION_TTL_SECONDS,
-                "instructions": instructions,
                 "sessionUpdate": session_update,
-                "tools": [SCHEDULING_TOOL] if cfg["protocol"] != "legacy-webrtc" and is_patient_access_request(request_body) else [],
                 "expiresAt": data.get("expires_at") or data.get("expiresAt"),
             })
         except RequestValidationError as exc:
@@ -1432,7 +1551,31 @@ def generate_conversation_script():
 
 
 class _ReusableServer(ThreadingHTTPServer):
-    allow_reuse_address = True
+    # On Windows SO_REUSEADDR lets a second process listen on a port that is already in use,
+    # so a stale server would silently keep receiving requests.
+    allow_reuse_address = os.name != "nt"
+
+
+def is_address_in_use(exc):
+    codes = {errno.EADDRINUSE, 10048}
+    return getattr(exc, "errno", None) in codes or getattr(exc, "winerror", None) in codes
+
+
+def port_in_use_hint(port):
+    if os.name == "nt":
+        return (
+            f"Port {port} is already in use. Stop the previous server:\n"
+            f"  Get-NetTCPConnection -LocalPort {port} -State Listen | "
+            "ForEach-Object { Stop-Process -Id $_.OwningProcess }"
+        )
+    return (
+        f"Port {port} is already in use. Stop the previous server:\n"
+        f"  lsof -ti:{port} | xargs kill"
+    )
+
+
+def create_demo_server(port):
+    return _ReusableServer(("127.0.0.1", port), DemoHandler)
 
 
 if __name__ == "__main__":
@@ -1440,13 +1583,10 @@ if __name__ == "__main__":
     generate_conversation_script()
     port = int(os.environ.get("PORT", "8787"))
     try:
-        server = _ReusableServer(("127.0.0.1", port), DemoHandler)
+        server = create_demo_server(port)
     except OSError as exc:
-        if getattr(exc, "errno", None) == 48:
-            print(
-                f"Port {port} is already in use. Stop the previous server:\n"
-                f"  lsof -ti:{port} | xargs kill -9"
-            )
+        if is_address_in_use(exc):
+            print(port_in_use_hint(port))
             raise SystemExit(1) from exc
         raise
     print(f"Voice Agent demo running at http://127.0.0.1:{port}")
