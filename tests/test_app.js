@@ -903,3 +903,23 @@ test("a later correction clears a live hint from the packet", () => {
   assert.equal(els.languages.textContent, "1");
   assert.deepEqual({ ...state.liveConversationHints }, { languagePreference: "", caregiverContext: "" });
 });
+
+test("ending a call while minting hangs stops a late microphone stream immediately", async () => {
+  const { context, micRequests, sessionRequests } = loadStartupApp();
+  const { state, startRealtimeSession, stopRealtimeSession } = context.__appTestHooks;
+  startRealtimeSession();
+  await flush();
+  assert.equal(sessionRequests.length, 1);
+  assert.ok(state.pendingMicrophone);
+
+  stopRealtimeSession();
+  assert.equal(state.pendingMicrophone, null);
+  stopRealtimeSession();
+
+  const { track, stream } = fakeStream();
+  micRequests[0].resolve(stream);
+  await flush();
+
+  assert.equal(track.stopped, true);
+  assert.equal(state.localStream, null);
+});

@@ -19,6 +19,9 @@ const state = {
   demoSessionId: "",
   schedulingCapability: "",
   verificationPromise: null,
+  // The early microphone request for the startup that is still in flight, so ending the call
+  // can release it without waiting for session minting to finish.
+  pendingMicrophone: null,
   liveConversationHints: {
     languagePreference: "",
     caregiverContext: ""
@@ -616,6 +619,7 @@ async function startRealtimeSession() {
       autoGainControl: true
     }
   });
+  state.pendingMicrophone = { generation: startGeneration, microphone };
 
   try {
     state.realtimeEventLog = [];
@@ -735,6 +739,7 @@ async function startRealtimeSession() {
       return;
     }
     state.localStream = microphone.adopt(localStream);
+    clearPendingMicrophone(startGeneration);
     state.localStream.getTracks().forEach(track => peerConnection.addTrack(track, state.localStream));
 
     const dataChannel = peerConnection.createDataChannel("realtime-channel");
@@ -783,8 +788,22 @@ async function startRealtimeSession() {
     stopRealtimeSession();
   } finally {
     microphone.release();
+    clearPendingMicrophone(startGeneration);
     if (state.realtimeSessionGeneration === startGeneration) state.connecting = false;
   }
+}
+
+// Only the startup that registered the pending microphone may clear it, so a stale attempt
+// never drops a newer attempt's handle.
+function clearPendingMicrophone(generation) {
+  if (state.pendingMicrophone?.generation === generation) state.pendingMicrophone = null;
+}
+
+// Releasing is idempotent: a released handle stops its stream now, or as soon as permission
+// resolves, and an adopted stream is never stopped through the handle.
+function releasePendingMicrophone() {
+  state.pendingMicrophone?.microphone.release();
+  state.pendingMicrophone = null;
 }
 
 // The opening turn keeps the session prompt in force: the context item is factual, and the
@@ -1663,6 +1682,7 @@ function isRealtimeSessionActive() {
 function stopRealtimeSession() {
   state.realtimeSessionGeneration += 1;
   state.connecting = false;
+  releasePendingMicrophone();
   state.dataChannel?.close();
   state.peerConnection?.close();
   state.localStream?.getTracks().forEach(track => track.stop());
