@@ -409,7 +409,7 @@ class DemoHttpServerTests(unittest.TestCase):
                 server,
                 "request_ga_realtime_client_secret",
                 return_value=fake_azure_session,
-            ),
+            ) as mint,
         ):
             status, _, payload = self.post_json(
                 "/api/realtime/session",
@@ -421,13 +421,18 @@ class DemoHttpServerTests(unittest.TestCase):
         self.assertEqual("gpt-realtime-2.1", payload["deployment"])
         self.assertEqual("marin", payload["voice"])
         self.assertEqual("low", payload["reasoningEffort"])
-        session_update = payload["sessionUpdate"]
-        self.assertNotIn("model", session_update)
-        self.assertNotIn("reasoning", session_update)
+        # The minted session carries the whole configuration; the browser resends nothing.
+        minted = mint.call_args.args[1]
+        self.assertEqual("gpt-realtime-2.1", minted["model"])
+        self.assertEqual({"effort": "low"}, minted["reasoning"])
+        self.assertEqual("marin", minted["audio"]["output"]["voice"])
         self.assertEqual(
             700,
-            session_update["audio"]["input"]["turn_detection"]["silence_duration_ms"],
+            minted["audio"]["input"]["turn_detection"]["silence_duration_ms"],
         )
+        self.assertEqual([server.SCHEDULING_TOOL], minted["tools"])
+        self.assertIn("BEGIN APPROVED DEMO KNOWLEDGE", minted["instructions"])
+        self.assertIsNone(payload["sessionUpdate"])
         self.assertNotIn("test-key", json.dumps(payload))
         self.assertNotIn("instructions", payload)
         self.assertNotIn("tools", payload)
@@ -874,17 +879,6 @@ class RealtimeSessionConstructionTests(unittest.TestCase):
             session["audio"]["input"]["turn_detection"]["silence_duration_ms"],
         )
         self.assertEqual([server.SCHEDULING_TOOL], session["tools"])
-
-    def test_browser_session_update_excludes_immutable_fields(self):
-        cfg = self.config()
-        session = server.build_realtime_session(
-            cfg, {"scenarioKey": "access"}, "instructions"
-        )
-        update = server.build_browser_session_update(session)
-
-        self.assertNotIn("model", update)
-        self.assertNotIn("reasoning", update)
-        self.assertEqual(session["instructions"], update["instructions"])
 
     def test_scheduling_tools_are_absent_for_non_access_scenarios(self):
         cfg = self.config()

@@ -797,8 +797,9 @@ def build_turn_detection(cfg):
 def build_realtime_session(cfg, request_body, instructions):
     """Build the authoritative Realtime session config.
 
-    The same object mints the client secret and drives the browser session.update,
-    so audio, turn-taking, reasoning, and tool config cannot drift apart.
+    This object mints the client secret, and Azure applies it to the call as-is (the
+    session.created event carries the full instructions, tools, audio, and reasoning),
+    so the browser never resends it with session.update.
     """
     audio_input = {
         "transcription": {"model": cfg["transcription_model"]},
@@ -852,17 +853,6 @@ def build_legacy_session_update(cfg, instructions):
             "output": {"voice": cfg["voice"] or "marin"},
         },
     }
-
-
-def build_browser_session_update(session):
-    """Strip fields that cannot be changed on an already-established session.
-
-    `model` and `reasoning` are accepted when minting the client secret, but the
-    Realtime service rejects them on a session.update with
-    "Unsupported option for this model."
-    """
-    immutable = {"model", "reasoning"}
-    return {key: value for key, value in session.items() if key not in immutable}
 
 
 class _RejectRedirects(HTTPRedirectHandler):
@@ -1435,7 +1425,8 @@ class DemoHandler(SimpleHTTPRequestHandler):
                 data = request_ga_realtime_client_secret(cfg, session)
                 ephemeral_token = data.get("value")
                 session_id = data.get("id")
-                session_update = build_browser_session_update(session)
+                # The minted session already applies to the call; nothing to resend.
+                session_update = None
 
             if not ephemeral_token:
                 self._json(502, {"error": "Azure did not return a realtime client secret."})

@@ -649,7 +649,7 @@ async function startRealtimeSession() {
     if (!sessionData.demoSessionId) {
       throw new Error("Realtime session did not include demo authorization state.");
     }
-    if (!sessionData.sessionUpdate) {
+    if (sessionData.protocol === "legacy-webrtc" && !sessionData.sessionUpdate) {
       throw new Error("Realtime session did not include its session configuration.");
     }
     state.demoSessionId = sessionData.demoSessionId;
@@ -789,8 +789,9 @@ async function startRealtimeSession() {
 
 // The opening turn keeps the session prompt in force: the context item is factual, and the
 // response.create carries no instructions because those would replace the session prompt.
+// GA sessions already run with the minted configuration, so only legacy sessions send an update.
 function sendOpeningEvents(channel, sessionUpdate, scenarioLabel) {
-  channel.send(JSON.stringify({ type: "session.update", session: sessionUpdate }));
+  if (sessionUpdate) channel.send(JSON.stringify({ type: "session.update", session: sessionUpdate }));
   channel.send(JSON.stringify({
     type: "conversation.item.create",
     item: {

@@ -452,6 +452,20 @@ test("the opening turn sends a factual system item and a bare response.create", 
   const context = loadApp();
   const { sendOpeningEvents } = context.__appTestHooks;
   const { sent, channel } = recordingChannel();
+
+  sendOpeningEvents(channel, null, "Patient access");
+
+  assert.deepEqual(sent.map(event => event.type), ["conversation.item.create", "response.create"]);
+  assert.equal(sent[0].item.role, "system");
+  assert.match(sent[0].item.content[0].text, /Patient access workflow/);
+  assert.doesNotMatch(sent[0].item.content[0].text, /verif|ask|date of birth/i);
+  assert.equal("instructions" in sent[1].response, false);
+});
+
+test("legacy sessions send their configuration before the opening turn", () => {
+  const context = loadApp();
+  const { sendOpeningEvents } = context.__appTestHooks;
+  const { sent, channel } = recordingChannel();
   const sessionUpdate = { type: "realtime", instructions: "SESSION PROMPT" };
 
   sendOpeningEvents(channel, sessionUpdate, "Patient access");
@@ -459,10 +473,6 @@ test("the opening turn sends a factual system item and a bare response.create", 
   assert.deepEqual(sent.map(event => event.type),
     ["session.update", "conversation.item.create", "response.create"]);
   assert.deepEqual(sent[0].session, sessionUpdate);
-  assert.equal(sent[1].item.role, "system");
-  assert.match(sent[1].item.content[0].text, /Patient access workflow/);
-  assert.doesNotMatch(sent[1].item.content[0].text, /verif|ask|date of birth/i);
-  assert.equal("instructions" in sent[2].response, false);
 });
 
 test("patient access shows validation complete only after the server verifies", async () => {
@@ -739,7 +749,8 @@ const okSession = () => ({
   ok: true,
   json: async () => ({
     demoSessionId: "demo-startup",
-    sessionUpdate: { type: "realtime" },
+    sessionUpdate: null,
+    protocol: "ga-webrtc",
     callsUrl: "https://demo.openai.azure.com/openai/v1/realtime/calls",
     token: "token"
   })
