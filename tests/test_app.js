@@ -650,6 +650,56 @@ test("barge-in marks the turn interrupted exactly once in either order", () => {
   }
 });
 
+test("cleared before any transcript still renders interrupted once the text arrives", () => {
+  const context = loadApp();
+  const { els, handleRealtimeEvent } = context.__appTestHooks;
+  sendEvents(handleRealtimeEvent, [
+    { type: "output_audio_buffer.cleared", response_id: "resp-3" },
+    transcriptDone("resp-3", "Your options are"),
+    responseDone("resp-3", "cancelled")
+  ]);
+  const rows = rileyRows(els);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].innerHTML.match(/\(interrupted\)/g).length, 1);
+  assert.match(rows[0].innerHTML, /Your options are/);
+});
+
+test("ending a call between response.done and output_audio_buffer.stopped marks the cut-off reply interrupted", () => {
+  const context = loadApp();
+  const { els, handleRealtimeEvent, stopRealtimeSession, state } = context.__appTestHooks;
+  startFakeLiveSession(state, recordingChannel().channel);
+  sendEvents(handleRealtimeEvent, [transcriptDone("resp-4", "Your appointment is confirmed."), responseDone("resp-4")]);
+
+  // response.done already rendered the row, but the audio was still playing when the call ended.
+  const rows = rileyRows(els);
+  assert.equal(rows.length, 1);
+  assert.doesNotMatch(rows[0].innerHTML, /interrupted/);
+
+  stopRealtimeSession();
+
+  const finalRows = rileyRows(els);
+  assert.equal(finalRows.length, 1);
+  assert.match(finalRows[0].innerHTML, /Your appointment is confirmed\./);
+  assert.equal(finalRows[0].innerHTML.match(/\(interrupted\)/g).length, 1);
+});
+
+test("a fully played reply is left unmarked when the call ends", () => {
+  const context = loadApp();
+  const { els, handleRealtimeEvent, stopRealtimeSession, state } = context.__appTestHooks;
+  startFakeLiveSession(state, recordingChannel().channel);
+  sendEvents(handleRealtimeEvent, [
+    transcriptDone("resp-5", "Your appointment is confirmed."),
+    { type: "output_audio_buffer.stopped", response_id: "resp-5" },
+    responseDone("resp-5")
+  ]);
+
+  stopRealtimeSession();
+
+  const rows = rileyRows(els);
+  assert.equal(rows.length, 1);
+  assert.doesNotMatch(rows[0].innerHTML, /interrupted/);
+});
+
 test("late terminal events from an older response never touch a newer turn", () => {
   const context = loadApp();
   const { els, handleRealtimeEvent } = context.__appTestHooks;
@@ -902,6 +952,21 @@ test("a later correction clears a live hint from the packet", () => {
   assert.doesNotMatch(packetText(els), /Language:|Caregiver/);
   assert.equal(els.languages.textContent, "1");
   assert.deepEqual({ ...state.liveConversationHints }, { languagePreference: "", caregiverContext: "" });
+});
+
+test("a correction split across two transcript events still clears the hint", () => {
+  const context = loadApp();
+  const { state, els, updateLiveConversationHints } = context.__appTestHooks;
+  startFakeLiveSession(state, recordingChannel().channel);
+
+  updateLiveConversationHints("My mom is driving me.");
+  assert.match(packetText(els), /Caregiver context: mother driving/);
+
+  // The correction itself never mentions "mom" or "driving"; only the rolling context from
+  // the prior event lets it be recognized.
+  updateLiveConversationHints("Actually, not this time.");
+  assert.doesNotMatch(packetText(els), /Caregiver/);
+  assert.equal(state.liveConversationHints.caregiverContext, "");
 });
 
 test("ending a call while minting hangs stops a late microphone stream immediately", async () => {

@@ -35,6 +35,9 @@ const state = {
   liveValidated: false,
   lastCallerTranscript: "",
   callerVerificationText: "",
+  // Rolling raw-text window so a correction split across transcript events ("My mom is
+  // driving me" / "Actually, not this time") still lands in the same detection pass.
+  liveHintContext: "",
   // Realtime response lifecycle, used to avoid colliding scheduling follow-ups.
   activeResponseId: null,
   pendingSchedulingFollowup: null,
@@ -70,6 +73,19 @@ const TOOL_CALL_WATCHDOG_MS = 4000;
 const VERIFICATION_TIMEOUT_MS = 6000;
 // Must equal server.py MAX_VERIFICATION_CONTEXT_CHARS and MAX_VERIFICATION_UTTERANCE_CHARS.
 const MAX_VERIFICATION_CONTEXT_CHARS = 2000;
+// Just long enough to span a sentence split across two transcript events.
+const MAX_HINT_CONTEXT_CHARS = 300;
+
+// Appends `text` to `previous`, then trims to the most recent `maxChars`, dropping any
+// word cut off at the start so the kept text never begins mid-word.
+function appendAndTrimToTail(previous, text, maxChars) {
+  const combined = `${previous} ${text}`.replace(/\s+/g, " ").trim();
+  const start = combined.length - maxChars;
+  if (start <= 0) return combined;
+  return combined[start - 1] === " "
+    ? combined.slice(start)
+    : combined.slice(start).replace(/^\S*\s?/, "");
+}
 const DATA_CHANNEL_OPEN_TIMEOUT_MS = 8000;
 const DEBUG_REALTIME = new URLSearchParams(window.location.search).has("debugRealtime") ||
   window.localStorage?.getItem("voiceDemoDebug") === "1";
@@ -856,6 +872,7 @@ function handleRealtimeEvent(rawMessage) {
     setSpeaking(true);
   }
   if (event.type === "output_audio_buffer.stopped") {
+    markAgentTurnPlayed(event.response_id);
     finalizeAgentTurn(event.response_id);
     setSpeaking(false);
   }
@@ -909,7 +926,7 @@ function agentTurnFor(responseId) {
   const key = responseId || [...turns.keys()].pop() || "current";
   let turn = turns.get(key);
   if (!turn) {
-    turn = { segments: [], deltaText: "", row: null, interrupted: false };
+    turn = { segments: [], deltaText: "", row: null, interrupted: false, suffixApplied: false, played: false };
     turns.set(key, turn);
     while (turns.size > MAX_TRACKED_AGENT_TURNS) turns.delete(turns.keys().next().value);
   }
@@ -921,8 +938,17 @@ function agentTurnText(turn) {
   return cleanAgentTurn(segments.length ? segments.join(" ") : turn.deltaText);
 }
 
+// Adds the suffix once a row exists, whether the row was just created or rendered earlier.
+function appendInterruptedSuffix(turn) {
+  if (turn.suffixApplied) return;
+  turn.suffixApplied = true;
+  (turn.row.querySelector(".bubble") || turn.row).insertAdjacentText("beforeend", INTERRUPTED_SUFFIX);
+}
+
 // Rendering happens once, at the first terminal event that has text; later terminal events
-// for the same response can only add the interrupted marker.
+// for the same response can only add the interrupted marker. A turn can still have no text
+// here (e.g. "cleared" arriving before any transcript) -- finalization is retried by the next
+// terminal event for the same response (stopped/done/cleared), once transcript text exists.
 function finalizeAgentTurn(responseId) {
   if (!responseId && state.agentTurns.size === 0) return;
   const turn = agentTurnFor(responseId);
@@ -934,26 +960,39 @@ function finalizeAgentTurn(responseId) {
     type: "agent",
     text: turn.interrupted ? `${text}${INTERRUPTED_SUFFIX}` : text
   });
+  if (turn.interrupted) turn.suffixApplied = true;
+}
+
+function markAgentTurnPlayed(responseId) {
+  if (!responseId && state.agentTurns.size === 0) return;
+  agentTurnFor(responseId).played = true;
 }
 
 function markAgentTurnInterrupted(responseId) {
   if (!responseId && state.agentTurns.size === 0) return;
   const turn = agentTurnFor(responseId);
-  if (turn.interrupted) return;
   turn.interrupted = true;
   if (turn.row) {
-    (turn.row.querySelector(".bubble") || turn.row).insertAdjacentText("beforeend", INTERRUPTED_SUFFIX);
+    appendInterruptedSuffix(turn);
   } else {
+    // No row yet (transcript text hasn't arrived): retry finalization now, and again
+    // whenever more transcript text or another terminal event comes in for this response.
     finalizeAgentTurn(responseId);
   }
 }
 
-// Ending a call mid-sentence still records what Riley had said so far.
+// Ending a call mid-sentence still records what Riley had said so far. A turn that already
+// rendered but whose audio never finished playing (call ended between response.done and
+// output_audio_buffer.stopped) is marked interrupted now instead of being left as if it
+// played in full.
 function flushOpenAgentTurns() {
   for (const turn of state.agentTurns.values()) {
-    if (turn.row) continue;
-    const text = agentTurnText(turn);
-    if (text) addMessage({ who: "Riley", type: "agent", text: `${text}${INTERRUPTED_SUFFIX}` });
+    if (!turn.row) {
+      const text = agentTurnText(turn);
+      if (text) addMessage({ who: "Riley", type: "agent", text: `${text}${INTERRUPTED_SUFFIX}` });
+      continue;
+    }
+    if (!turn.played) appendInterruptedSuffix(turn);
   }
   state.agentTurns = new Map();
 }
@@ -1357,7 +1396,11 @@ function clearSchedulingAuthorization() {
 }
 
 function updateLiveConversationHints(text) {
-  const detected = DOMAIN.detectConversationHints(text);
+  // Shared across topics, so a generic correction ("actually, not this time") can clear an
+  // older, unrelated hint if a topic switch happened inside the same 300-char window. This
+  // demo guard favors catching cross-event corrections over clause-level topic scoping.
+  state.liveHintContext = appendAndTrimToTail(state.liveHintContext, text, MAX_HINT_CONTEXT_CHARS);
+  const detected = DOMAIN.detectConversationHints(state.liveHintContext);
   const hints = state.liveConversationHints;
   let changed = false;
   for (const key of ["languagePreference", "caregiverContext"]) {
@@ -1702,6 +1745,7 @@ function stopRealtimeSession() {
   state.schedulingCapability = "";
   state.verificationPromise = null;
   state.liveConversationHints = { languagePreference: "", caregiverContext: "" };
+  state.liveHintContext = "";
   flushOpenAgentTurns();
   state.packetOwner = "none";
   state.liveMilestoneRank = 0;

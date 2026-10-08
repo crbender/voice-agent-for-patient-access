@@ -373,7 +373,14 @@
     const laterDenials = latest.index >= 0 ? [...denials, ...corrections] : denials;
     for (const denial of laterDenials) {
       for (const match of text.matchAll(denial)) {
-        if (match.index > latest.index) latest = { index: match.index, stance: "denied" };
+        if (match.index <= latest.index) continue;
+        // "I don't want English only" negates the denial phrase itself, so it must not
+        // override an earlier affirmed mention. NEGATED_MENTION is a generic nearby-negation
+        // check (not scoped to this clause), so an unrelated negation just before the denial
+        // phrase (e.g. "I can't drive and English only") can also suppress it; this demo guard
+        // favors the common case over clause-level grammar parsing.
+        if (NEGATED_MENTION.test(text.slice(0, match.index))) continue;
+        latest = { index: match.index, stance: "denied" };
       }
     }
     return latest.stance;

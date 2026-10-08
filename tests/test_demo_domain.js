@@ -254,6 +254,7 @@ test("conversation hints follow the latest affirmed or denied mention", () => {
     ["Spanish? No, I do not need Spanish.", { languagePreference: "" }],
     ["I speak Spanish, but I want English only.", { languagePreference: "" }],
     ["I don't need English only; Spanish please.", spanish],
+    ["Spanish please; I don't want English only.", spanish],
     ["My mom cannot drive me.", { caregiverContext: "" }],
     ["My mom can't drive this week.", { caregiverContext: "" }],
     ["My mom is driving me, actually, not this time.", { caregiverContext: "" }],
