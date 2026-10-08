@@ -71,7 +71,9 @@ Use this to demonstrate live latency, live transcripts, the server-side auth bou
 
 The primary live path uses the `gpt-realtime-2.1` deployment (model version `2026-07-07`) with GA WebRTC. Legacy WebRTC remains available only as an older deployment fallback.
 
-`server.py` builds a single authoritative Realtime session object that both mints the short-lived client secret and drives the browser `session.update`. This keeps instructions, voice, transcription, turn detection, tools, and reasoning effort identical on both sides. `model` and `reasoning` are set only at session creation, because the Realtime service rejects them on an established session.
+`server.py` builds a single authoritative Realtime session object and mints the short-lived client secret with it. Azure applies the minted configuration to the call (instructions, voice, transcription, turn detection, tools, and reasoning effort all appear in `session.created`), so the browser does not resend it; only older `legacy-webrtc` deployments, which mint just the model and voice, receive a server-built `session.update`. The browser never sends response-level `instructions`, because they replace the session prompt for that response; scheduling turn guidance travels in the tool result instead.
+
+A live call can move between views: the patient panel's **Executive view** control hides the panel without ending the call and shows the same conversation with the live action packet and KPIs.
 
 ### Mock Scheduling Tool
 

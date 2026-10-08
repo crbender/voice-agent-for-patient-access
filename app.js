@@ -19,17 +19,25 @@ const state = {
   demoSessionId: "",
   schedulingCapability: "",
   verificationPromise: null,
+  // The early microphone request for the startup that is still in flight, so ending the call
+  // can release it without waiting for session minting to finish.
+  pendingMicrophone: null,
   liveConversationHints: {
     languagePreference: "",
     caregiverContext: ""
   },
-  agentTranscriptBuffer: "",
-  agentAudioTurnText: "",
-  agentAudioSegments: [],
-  agentAudioTurnStarted: false,
-  callbackDriftCancelled: false,
+  // Agent transcript turns keyed by Realtime response id, so late terminal events from an
+  // older response cannot attach to a newer one.
+  agentTurns: new Map(),
+  // Which flow owns the action packet: "none", "live-context", or "scheduling".
+  packetOwner: "none",
+  liveMilestoneRank: 0,
+  liveValidated: false,
   lastCallerTranscript: "",
   callerVerificationText: "",
+  // Rolling raw-text window so a correction split across transcript events ("My mom is
+  // driving me" / "Actually, not this time") still lands in the same detection pass.
+  liveHintContext: "",
   // Realtime response lifecycle, used to avoid colliding scheduling follow-ups.
   activeResponseId: null,
   pendingSchedulingFollowup: null,
@@ -42,7 +50,6 @@ const state = {
   remoteAudio: null,
   realtimeEventLog: [],
   audioPlaybackLog: [],
-  scriptStartedAt: 0,
   totalScenes: 0,
   currentSceneIndex: -1,
   ttsVoice: null,
@@ -66,6 +73,19 @@ const TOOL_CALL_WATCHDOG_MS = 4000;
 const VERIFICATION_TIMEOUT_MS = 6000;
 // Must equal server.py MAX_VERIFICATION_CONTEXT_CHARS and MAX_VERIFICATION_UTTERANCE_CHARS.
 const MAX_VERIFICATION_CONTEXT_CHARS = 2000;
+// Just long enough to span a sentence split across two transcript events.
+const MAX_HINT_CONTEXT_CHARS = 300;
+
+// Appends `text` to `previous`, then trims to the most recent `maxChars`, dropping any
+// word cut off at the start so the kept text never begins mid-word.
+function appendAndTrimToTail(previous, text, maxChars) {
+  const combined = `${previous} ${text}`.replace(/\s+/g, " ").trim();
+  const start = combined.length - maxChars;
+  if (start <= 0) return combined;
+  return combined[start - 1] === " "
+    ? combined.slice(start)
+    : combined.slice(start).replace(/^\S*\s?/, "");
+}
 const DATA_CHANNEL_OPEN_TIMEOUT_MS = 8000;
 const DEBUG_REALTIME = new URLSearchParams(window.location.search).has("debugRealtime") ||
   window.localStorage?.getItem("voiceDemoDebug") === "1";
@@ -122,6 +142,7 @@ const els = {
   agentSurface: document.getElementById("agentSurface"),
   patientStartBtn: document.getElementById("patientStartBtn"),
   patientStopBtn: document.getElementById("patientStopBtn"),
+  panelExecutiveViewBtn: document.getElementById("panelExecutiveViewBtn"),
   executiveApp: document.getElementById("executiveApp"),
   callerEyebrow: document.getElementById("callerEyebrow"),
   siteUserName: document.getElementById("siteUserName"),
@@ -226,13 +247,15 @@ function setSceneChipActive(index) {
   });
 }
 
-function addMessage(item) {
+function rowClassName(item) {
   const isPatient = item.type === "patient";
   const isSystem = item.type === "system";
-  const row = document.createElement("div");
-  row.className = `bubble-row ${isPatient ? "patient" : isSystem ? "system" : "agent"}`;
+  return `bubble-row ${isPatient ? "patient" : isSystem ? "system" : "agent"}`;
+}
 
-  const ts = formatTimestamp();
+function rowHtml(item, ts) {
+  const isPatient = item.type === "patient";
+  const isSystem = item.type === "system";
   const initials = (item.who || "").split(/\s+/).map(p => p[0]).filter(Boolean).slice(0, 2).join("").toUpperCase() || "?";
   const avatarHtml = isPatient
     ? `<div class="avatar">${initials}</div>`
@@ -245,13 +268,22 @@ function addMessage(item) {
     ${escapeHtml(item.text)}
   </div>`;
 
-  row.innerHTML = isPatient ? `${bubbleHtml}${avatarHtml}` : `${avatarHtml}${bubbleHtml}`;
+  return isPatient ? `${bubbleHtml}${avatarHtml}` : `${avatarHtml}${bubbleHtml}`;
+}
+
+function addMessage(item, ts = formatTimestamp()) {
+  const row = document.createElement("div");
+  row.className = rowClassName(item);
+  row.innerHTML = rowHtml(item, ts);
+  row.dataset.ts = ts;
   els.transcript.querySelector(".empty-state")?.remove();
   els.transcript.appendChild(row);
-  while (els.transcript.querySelectorAll(".bubble-row").length > MAX_TRANSCRIPT_MESSAGES) {
-    els.transcript.querySelector(".bubble-row")?.remove();
+  const rows = els.transcript.querySelectorAll(".bubble-row");
+  for (let index = 0; index < rows.length - MAX_TRANSCRIPT_MESSAGES; index += 1) {
+    rows[index].remove();
   }
   els.transcript.scrollTop = els.transcript.scrollHeight;
+  return row;
 }
 
 function formatTimestamp() {
@@ -278,7 +310,7 @@ function updateMetrics(item) {
 
 function updatePacket(item) {
   if (!item.packet) return;
-  els.actionPacket.innerHTML = item.packet.map(line => `<span>${line}</span>`).join("");
+  els.actionPacket.innerHTML = item.packet.map(line => `<span>${escapeHtml(line)}</span>`).join("");
   if (item.tag) {
     els.handoffTag.textContent = item.tag;
     els.handoffTag.classList.toggle("hot", item.tag !== "Complete");
@@ -286,11 +318,82 @@ function updatePacket(item) {
   }
 }
 
-function setActionPacketLines(lines, tag = "Confirmed") {
+function setActionPacketLines(lines, tag = "Confirmed", owner = "scheduling") {
+  state.packetOwner = owner;
   els.actionPacket.innerHTML = lines.map(line => `<span>${escapeHtml(line)}</span>`).join("");
   els.handoffTag.textContent = tag;
   els.handoffTag.classList.toggle("hot", tag !== "Complete" && tag !== "Confirmed");
   els.handoffTag.classList.toggle("complete", tag === "Complete" || tag === "Confirmed");
+}
+
+// Live calls advance the executive KPIs at the same milestones the scripted access run uses.
+// Milestones only move forward within a call.
+const LIVE_MILESTONES = {
+  connected: { rank: 1, containment: "10%", waitAvoided: "2m" },
+  verified: { rank: 2, containment: "30%", waitAvoided: "5m" },
+  options: { rank: 3, containment: "60%", waitAvoided: "9m" },
+  confirmed: { rank: 4, containment: "88%", waitAvoided: "14m" }
+};
+
+const LIVE_INTENT_LINES = {
+  access: "Intent: patient access call",
+  revenue: "Intent: billing support call",
+  multilingual: "Intent: language access call"
+};
+
+function recordLiveMilestone(name) {
+  const milestone = LIVE_MILESTONES[name];
+  if (milestone && milestone.rank > state.liveMilestoneRank) {
+    state.liveMilestoneRank = milestone.rank;
+    els.containment.textContent = milestone.containment;
+    els.waitTime.textContent = milestone.waitAvoided;
+    if (els.kpiContainment) els.kpiContainment.textContent = milestone.containment;
+  }
+  updateLiveLanguageMetric();
+}
+
+function updateLiveLanguageMetric() {
+  const bilingual = state.scenarioKey === "multilingual" ||
+    Boolean(state.liveConversationHints.languagePreference);
+  els.languages.textContent = bilingual ? "2" : "1";
+}
+
+function recordSchedulingMilestone(result) {
+  if (result.status === "options_found" || result.status === "alternate_proposed") {
+    recordLiveMilestone("options");
+  } else if (result.status === "confirmed") {
+    recordLiveMilestone("confirmed");
+  }
+}
+
+function showSchedulingResultPacket(result) {
+  setActionPacketLines(
+    formatSchedulingPacket(result),
+    result.status === "confirmed" ? "Confirmed" : "Needs patient"
+  );
+  recordSchedulingMilestone(result);
+}
+
+// The live context packet never overwrites a scheduling packet, which carries more detail.
+function renderLiveContextPacket() {
+  if (state.packetOwner === "scheduling") return;
+  const hints = state.liveConversationHints;
+  setActionPacketLines([
+    LIVE_INTENT_LINES[state.scenarioKey] || "Intent: live call",
+    state.liveValidated ? "Validation: complete" : "Validation: pending (name + DOB)",
+    hints.languagePreference ? `Language: ${hints.languagePreference}` : null,
+    hints.caregiverContext ? `Caregiver context: ${hints.caregiverContext}` : null,
+    "Escalation: not required"
+  ].filter(Boolean), state.liveValidated ? "In progress" : "Pending", "live-context");
+}
+
+// Patient access counts as validated only once the server issues a scheduling capability;
+// the other scenarios have no server step, so the client match is final for them.
+function markLiveValidated() {
+  if (state.liveValidated) return;
+  state.liveValidated = true;
+  recordLiveMilestone("verified");
+  renderLiveContextPacket();
 }
 
 function setSpeaking(isSpeaking) {
@@ -425,6 +528,7 @@ function resetDemo() {
   els.handoffTag.classList.add("hot");
   els.handoffTag.classList.remove("complete");
   els.actionPacket.innerHTML = `<span>Intent: not detected yet</span><span>Validation: pending</span><span>Escalation: not required</span>`;
+  state.packetOwner = "none";
   setSceneChipActive(-1);
 }
 
@@ -531,6 +635,16 @@ async function startRealtimeSession() {
   const startGeneration = state.realtimeSessionGeneration;
   const isStartupCurrent = () =>
     state.connecting && state.realtimeSessionGeneration === startGeneration;
+  // Ask for the microphone while the session is minted; the stream stays local to this
+  // attempt until it is adopted, and is released on any failure or stale exit.
+  const microphone = DOMAIN.requestEarlyMicrophone(navigator.mediaDevices, {
+    audio: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true
+    }
+  });
+  state.pendingMicrophone = { generation: startGeneration, microphone };
 
   try {
     state.realtimeEventLog = [];
@@ -543,11 +657,7 @@ async function startRealtimeSession() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        scenario: scenario().label,
         scenarioKey: state.scenarioKey,
-        systemPrompt: scenario().systemPrompt,
-        talkTrack: scenario().talkTrack,
-        close: scenario().close,
         knowledge: scopedContext.knowledge,
         signedInProfile: scopedContext.profile,
         demoScript: scenario().script.map(item => ({
@@ -567,6 +677,9 @@ async function startRealtimeSession() {
     }
     if (!sessionData.demoSessionId) {
       throw new Error("Realtime session did not include demo authorization state.");
+    }
+    if (sessionData.protocol === "legacy-webrtc" && !sessionData.sessionUpdate) {
+      throw new Error("Realtime session did not include its session configuration.");
     }
     state.demoSessionId = sessionData.demoSessionId;
     state.schedulingCapability = "";
@@ -645,24 +758,22 @@ async function startRealtimeSession() {
       }
     };
 
-    const localStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
-      }
-    });
+    const localStream = await microphone.promise;
     if (!isStartupCurrent()) {
-      localStream.getTracks().forEach(track => track.stop());
       peerConnection.close();
       return;
     }
-    state.localStream = localStream;
+    state.localStream = microphone.adopt(localStream);
+    clearPendingMicrophone(startGeneration);
     state.localStream.getTracks().forEach(track => peerConnection.addTrack(track, state.localStream));
 
     const dataChannel = peerConnection.createDataChannel("realtime-channel");
     state.dataChannel = dataChannel;
-    dataChannel.addEventListener("message", event => handleRealtimeEvent(event.data));
+    // Messages still queued on an ended call's channel must never reach a newer call.
+    dataChannel.addEventListener("message", event => {
+      if (state.realtimeSessionGeneration !== startGeneration || state.dataChannel !== dataChannel) return;
+      handleRealtimeEvent(event.data);
+    });
     dataChannel.addEventListener("close", () => setSpeaking(false));
 
     const offer = await peerConnection.createOffer();
@@ -684,47 +795,12 @@ async function startRealtimeSession() {
     await DOMAIN.waitForDataChannelOpen(dataChannel, DATA_CHANNEL_OPEN_TIMEOUT_MS);
     if (!isStartupCurrent()) return;
     els.agentFace.classList.add("is-live");
-    dataChannel.send(JSON.stringify({
-      type: "session.update",
-      session: sessionData.sessionUpdate || {
-        type: "realtime",
-        instructions: sessionData.instructions,
-        tools: sessionData.tools || [],
-        tool_choice: "auto",
-        output_modalities: ["audio"],
-        audio: {
-          input: {
-            transcription: { model: sessionData.transcriptionModel || "whisper-1" },
-            turn_detection: {
-              type: "server_vad",
-              threshold: 0.35,
-              prefix_padding_ms: 500,
-              silence_duration_ms: 700,
-              create_response: true
-            }
-          },
-          output: { voice: sessionData.voice || "marin" }
-        }
-      }
-    }));
-    dataChannel.send(JSON.stringify({
-      type: "conversation.item.create",
-      item: {
-        type: "message",
-        role: "user",
-        content: [{
-          type: "input_text",
-          text: `A signed-in Northlake MyHealth user opened the live voice assistant for the ${scenario().label} workflow. Start naturally as Riley, acknowledge the MyHealth sign-in, and perform voice-channel verification before handling any request or mentioning appointment-specific details. Ask only for the caller's name and date of birth. After verification, follow the caller's intent naturally; they may confirm the visit, ask an access question, request a reschedule, choose an offered slot, or change direction.`
-        }]
-      }
-    }));
-    dataChannel.send(JSON.stringify({
-      type: "response.create",
-      response: {
-        output_modalities: ["audio"],
-        instructions: "Respond with audio. Start with a brief Riley greeting, acknowledge the signed-in MyHealth context, and ask for voice-channel verification with name and date of birth. Do not mention appointment-specific details or handle the caller's request until verification is complete. End with that verification question so the caller knows exactly what to do next."
-      }
-    }));
+    sendOpeningEvents(dataChannel, sessionData.sessionUpdate, scenario().label);
+    state.liveMilestoneRank = 0;
+    state.liveValidated = false;
+    state.packetOwner = "none";
+    recordLiveMilestone("connected");
+    renderLiveContextPacket();
     els.startRealtimeBtn.textContent = "Conversation live";
     if (els.patientStartBtn) els.patientStartBtn.textContent = "Conversation live";
     setConnectionState("live", "Live voice");
@@ -736,8 +812,45 @@ async function startRealtimeSession() {
     addMessage({ who: "Realtime error", type: "system", text: error.message || String(error) });
     stopRealtimeSession();
   } finally {
+    microphone.release();
+    clearPendingMicrophone(startGeneration);
     if (state.realtimeSessionGeneration === startGeneration) state.connecting = false;
   }
+}
+
+// Only the startup that registered the pending microphone may clear it, so a stale attempt
+// never drops a newer attempt's handle.
+function clearPendingMicrophone(generation) {
+  if (state.pendingMicrophone?.generation === generation) state.pendingMicrophone = null;
+}
+
+// Releasing is idempotent: a released handle stops its stream now, or as soon as permission
+// resolves, and an adopted stream is never stopped through the handle.
+function releasePendingMicrophone() {
+  state.pendingMicrophone?.microphone.release();
+  state.pendingMicrophone = null;
+}
+
+// The opening turn keeps the session prompt in force: the context item is factual, and the
+// response.create carries no instructions because those would replace the session prompt.
+// GA sessions already run with the minted configuration, so only legacy sessions send an update.
+function sendOpeningEvents(channel, sessionUpdate, scenarioLabel) {
+  if (sessionUpdate) channel.send(JSON.stringify({ type: "session.update", session: sessionUpdate }));
+  channel.send(JSON.stringify({
+    type: "conversation.item.create",
+    item: {
+      type: "message",
+      role: "system",
+      content: [{
+        type: "input_text",
+        text: `A signed-in Northlake MyHealth user just opened the live voice assistant for the ${scenarioLabel} workflow.`
+      }]
+    }
+  }));
+  channel.send(JSON.stringify({
+    type: "response.create",
+    response: { output_modalities: ["audio"] }
+  }));
 }
 
 function handleRealtimeEvent(rawMessage) {
@@ -756,25 +869,33 @@ function handleRealtimeEvent(rawMessage) {
     updateLiveConversationHints(event.transcript);
   }
   if (event.type === "response.output_audio_transcript.done" && event.transcript) {
-    state.agentAudioSegments.push(event.transcript);
-    state.callbackDriftCancelled = false;
+    const turn = agentTurnFor(event.response_id);
+    turn.segments.push(event.transcript);
+    // If "cleared" already marked this turn interrupted before any text arrived, render it
+    // now instead of waiting for a later terminal event. A response can emit more than one
+    // transcript segment, so an already-rendered interrupted row is refreshed in place rather
+    // than left frozen on just the first segment.
+    if (turn.interrupted) {
+      if (turn.row) updateAgentTurnRow(turn);
+      else finalizeAgentTurn(event.response_id);
+    }
   }
   if (event.type === "response.output_audio_transcript.delta" && event.delta) {
-    state.agentTranscriptBuffer += event.delta;
-    state.agentAudioTurnText += event.delta;
+    agentTurnFor(event.response_id).deltaText += event.delta;
     ensureRemoteAudioPlayback("audio-transcript-delta");
     setSpeaking(true);
   }
   if (event.type === "output_audio_buffer.started") {
-    state.agentAudioTurnStarted = true;
-    state.agentAudioTurnText = "";
-    state.agentAudioSegments = [];
-    state.agentTranscriptBuffer = "";
     ensureRemoteAudioPlayback("output-audio-started");
     setSpeaking(true);
   }
   if (event.type === "output_audio_buffer.stopped") {
-    flushAgentAudioTurn();
+    markAgentTurnPlayed(event.response_id);
+    finalizeAgentTurn(event.response_id);
+    setSpeaking(false);
+  }
+  if (event.type === "output_audio_buffer.cleared") {
+    markAgentTurnInterrupted(event.response_id);
     setSpeaking(false);
   }
   if (event.type === "response.created") {
@@ -782,6 +903,11 @@ function handleRealtimeEvent(rawMessage) {
   }
   if (event.type === "response.done") {
     state.activeResponseId = null;
+    if (event.response?.status === "cancelled") {
+      markAgentTurnInterrupted(event.response?.id);
+    } else {
+      finalizeAgentTurn(event.response?.id);
+    }
     flushPendingSchedulingFollowup();
   }
   if (event.type === "error") {
@@ -809,19 +935,95 @@ function handleRealtimeErrorEvent(event) {
   }
 }
 
-function flushAgentAudioTurn() {
-  const segments = state.agentAudioSegments.map(normalizeWhitespace).filter(Boolean);
-  const text = segments.length
-    ? cleanAgentTurn(segments.join(" "))
-    : cleanAgentTurn(state.agentAudioTurnText);
-  if (text) {
-    addMessage({ who: "Riley", type: "agent", text });
+const MAX_TRACKED_AGENT_TURNS = 8;
+const INTERRUPTED_SUFFIX = " (interrupted)";
+
+// Events without a response id belong to the most recent turn.
+function agentTurnFor(responseId) {
+  const turns = state.agentTurns;
+  const key = responseId || [...turns.keys()].pop() || "current";
+  let turn = turns.get(key);
+  if (!turn) {
+    turn = { segments: [], deltaText: "", row: null, interrupted: false, suffixApplied: false, played: false };
+    turns.set(key, turn);
+    while (turns.size > MAX_TRACKED_AGENT_TURNS) turns.delete(turns.keys().next().value);
   }
-  state.agentAudioTurnText = "";
-  state.agentAudioSegments = [];
-  state.agentTranscriptBuffer = "";
-  state.agentAudioTurnStarted = false;
-  state.callbackDriftCancelled = false;
+  return turn;
+}
+
+function agentTurnText(turn) {
+  const segments = turn.segments.map(normalizeWhitespace).filter(Boolean);
+  return cleanAgentTurn(segments.length ? segments.join(" ") : turn.deltaText);
+}
+
+// Adds the suffix once a row exists, whether the row was just created or rendered earlier.
+function appendInterruptedSuffix(turn) {
+  if (turn.suffixApplied) return;
+  turn.suffixApplied = true;
+  (turn.row.querySelector(".bubble") || turn.row).insertAdjacentText("beforeend", INTERRUPTED_SUFFIX);
+}
+
+// Re-renders an already-rendered interrupted turn's text in place, keeping its original
+// timestamp. Used when a response emits more than one transcript segment after "cleared"
+// already forced an early render off the first segment -- without this, later segments would
+// be tracked in state but never shown.
+function updateAgentTurnRow(turn) {
+  const text = `${agentTurnText(turn)}${INTERRUPTED_SUFFIX}`;
+  turn.row.innerHTML = rowHtml({ who: "Riley", type: "agent", text }, turn.row.dataset.ts);
+  turn.suffixApplied = true;
+}
+
+// Rendering happens once, at the first event that has text; later terminal events for the
+// same response can only add the interrupted marker. A turn can still have no text here
+// (e.g. "cleared" arriving before any transcript) -- finalization is retried as soon as
+// transcript text arrives for an already-interrupted turn, or by the next terminal event
+// otherwise.
+function finalizeAgentTurn(responseId) {
+  if (!responseId && state.agentTurns.size === 0) return;
+  const turn = agentTurnFor(responseId);
+  if (turn.row) return;
+  const text = agentTurnText(turn);
+  if (!text) return;
+  turn.row = addMessage({
+    who: "Riley",
+    type: "agent",
+    text: turn.interrupted ? `${text}${INTERRUPTED_SUFFIX}` : text
+  });
+  if (turn.interrupted) turn.suffixApplied = true;
+}
+
+function markAgentTurnPlayed(responseId) {
+  if (!responseId && state.agentTurns.size === 0) return;
+  agentTurnFor(responseId).played = true;
+}
+
+function markAgentTurnInterrupted(responseId) {
+  if (!responseId && state.agentTurns.size === 0) return;
+  const turn = agentTurnFor(responseId);
+  turn.interrupted = true;
+  if (turn.row) {
+    appendInterruptedSuffix(turn);
+  } else {
+    // No row yet (transcript text hasn't arrived): retry finalization now, and again
+    // whenever more transcript text or another terminal event comes in for this response.
+    finalizeAgentTurn(responseId);
+  }
+}
+
+// Ending a call mid-sentence still records what Riley had said so far. A turn that already
+// rendered but whose audio never finished playing (call ended between response.done and
+// output_audio_buffer.stopped) is marked interrupted now instead of being left as if it
+// played in full.
+function flushOpenAgentTurns() {
+  for (const turn of state.agentTurns.values()) {
+    if (!turn.row) {
+      const text = agentTurnText(turn);
+      if (text) addMessage({ who: "Riley", type: "agent", text: `${text}${INTERRUPTED_SUFFIX}` });
+      continue;
+    }
+    if (!turn.played) appendInterruptedSuffix(turn);
+  }
+  state.agentTurns = new Map();
 }
 
 function normalizeWhitespace(value) {
@@ -939,13 +1141,9 @@ async function handleSchedulingToolCall(callId, rawArguments) {
   }
 
   const payload = {
-    scenario: scenario().label,
     scenario_key: state.scenarioKey,
-    patient_name: args.patient_name || args.patientName || "Jordan Lee",
     requested_window: args.requested_window || args.requestedWindow || args.preferred_window || "",
     selected_slot_id: args.selected_slot_id || args.selectedSlotId || "",
-    visit_type: args.visit_type || args.visitType || "imaging",
-    facility: args.facility || "Northlake Imaging Center",
     language_preference: args.language_preference || args.languagePreference || "",
     caregiver_context: args.caregiver_context || args.caregiverContext || ""
   };
@@ -1025,7 +1223,7 @@ async function handleSchedulingToolCall(callId, rawArguments) {
 
     const resultText = formatSchedulingResult(result);
     addMessage({ who: "Scheduling system", type: "system", text: resultText });
-    setActionPacketLines(formatSchedulingPacket(result), result.status === "confirmed" ? "Confirmed" : "Needs patient");
+    showSchedulingResultPacket(result);
     state.pendingToolStatuses.delete(callId);
 
     sendSchedulingFunctionOutputToRealtime(
@@ -1067,7 +1265,11 @@ function updateVoiceVerificationFromCallerText(text) {
       : combined.slice(start).replace(/^\S*\s?/, "");
   if (callerProvidedFullVerification()) {
     state.voiceVerified = true;
-    syncServerVerification(state.callerVerificationText);
+    if (state.scenarioKey === "access") {
+      syncServerVerification(state.callerVerificationText);
+    } else {
+      markLiveValidated();
+    }
   }
 }
 
@@ -1121,6 +1323,7 @@ function syncServerVerification(text) {
         if (response.ok && result.status === "verified" && result.scheduling_capability) {
           state.schedulingCapability = result.scheduling_capability;
           state.voiceVerified = true;
+          markLiveValidated();
         } else if (result.status === "validation_required") {
           clearSchedulingAuthorization();
         } else if (response.status === 400) {
@@ -1218,15 +1421,26 @@ function clearSchedulingAuthorization() {
   state.schedulingCapability = "";
   state.voiceVerified = false;
   state.callerVerificationText = "";
+  state.liveValidated = false;
 }
 
 function updateLiveConversationHints(text) {
-  const normalized = text.toLowerCase();
-  if (normalized.includes("spanish") || normalized.includes("español")) {
-    state.liveConversationHints.languagePreference = "English first, Spanish second";
+  // Shared across topics, so a generic correction ("actually, not this time") can clear an
+  // older, unrelated hint if a topic switch happened inside the same 300-char window. This
+  // demo guard favors catching cross-event corrections over clause-level topic scoping.
+  state.liveHintContext = appendAndTrimToTail(state.liveHintContext, text, MAX_HINT_CONTEXT_CHARS);
+  const detected = DOMAIN.detectConversationHints(state.liveHintContext);
+  const hints = state.liveConversationHints;
+  let changed = false;
+  for (const key of ["languagePreference", "caregiverContext"]) {
+    if (key in detected && hints[key] !== detected[key]) {
+      hints[key] = detected[key];
+      changed = true;
+    }
   }
-  if (normalized.includes("mom") || normalized.includes("mother")) {
-    state.liveConversationHints.caregiverContext = "mother driving";
+  if (changed) {
+    updateLiveLanguageMetric();
+    renderLiveContextPacket();
   }
 }
 
@@ -1279,12 +1493,8 @@ async function runClientSchedulingFallback(requestedWindow, stage, callId = null
   state.schedulingWindowsHandled.add(windowKey);
 
   const payload = {
-    scenario: scenario().label,
     scenario_key: state.scenarioKey,
-    patient_name: "Jordan Lee",
     requested_window: requestedWindow,
-    visit_type: "imaging",
-    facility: "Northlake Imaging Center",
     language_preference: state.liveConversationHints.languagePreference,
     caregiver_context: state.liveConversationHints.caregiverContext
   };
@@ -1323,7 +1533,7 @@ async function runClientSchedulingFallback(requestedWindow, stage, callId = null
 
     const resultText = formatSchedulingResult(result);
     addMessage({ who: "Scheduling system", type: "system", text: resultText });
-    setActionPacketLines(formatSchedulingPacket(result), result.status === "confirmed" ? "Confirmed" : "Needs patient");
+    showSchedulingResultPacket(result);
     if (callId) {
       sendSchedulingFunctionOutputToRealtime(
         callId,
@@ -1382,13 +1592,14 @@ function isSchedulingSessionCurrent(sessionGeneration, sessionChannel) {
 function sendSchedulingFunctionOutputToRealtime(
   callId,
   result,
-  instructions,
+  responseGuidance,
   sessionGeneration = state.realtimeSessionGeneration,
   sessionChannel = state.dataChannel
 ) {
   if (!isSchedulingSessionCurrent(sessionGeneration, sessionChannel) || !isRealtimeChannelOpen(sessionChannel)) return;
 
-  // The model accepts exactly one output per tool-call id.
+  // The model accepts exactly one output per tool-call id. Turn guidance rides in the tool
+  // result because response-level instructions would replace the whole session prompt.
   if (!state.sentToolOutputCallIds.has(callId)) {
     state.sentToolOutputCallIds.add(callId);
     sessionChannel.send(JSON.stringify({
@@ -1396,19 +1607,19 @@ function sendSchedulingFunctionOutputToRealtime(
       item: {
         type: "function_call_output",
         call_id: callId,
-        output: JSON.stringify(toModelSchedulingResult(result))
+        output: JSON.stringify(toModelSchedulingResult(result, responseGuidance))
       }
     }));
   }
 
-  requestSchedulingFollowup(callId, instructions);
+  requestSchedulingFollowup(callId);
 }
 
 // Riley should speak the scheduling result exactly once. If a response is already being
 // generated, defer instead of racing it; the deferred turn is released by response.done.
-function requestSchedulingFollowup(callId, instructions) {
+function requestSchedulingFollowup(callId) {
   if (state.sentFollowupCallIds.has(callId)) return;
-  const followup = { callId, instructions };
+  const followup = { callId };
   if (state.activeResponseId) {
     state.pendingSchedulingFollowup = followup;
     return;
@@ -1424,10 +1635,7 @@ function submitSchedulingFollowup(followup) {
   state.dataChannel.send(JSON.stringify({
     event_id: eventId,
     type: "response.create",
-    response: {
-      output_modalities: ["audio"],
-      instructions: followup.instructions
-    }
+    response: { output_modalities: ["audio"] }
   }));
 }
 
@@ -1439,7 +1647,7 @@ function flushPendingSchedulingFollowup() {
   submitSchedulingFollowup(pending);
 }
 
-function toModelSchedulingResult(result) {
+function toModelSchedulingResult(result, responseGuidance = "") {
   return {
     status: result.status,
     selected_slot_id: result.selected_slot_id,
@@ -1456,7 +1664,8 @@ function toModelSchedulingResult(result) {
     caregiver_context: result.caregiver_context,
     reason: result.reason,
     message: result.message,
-    next_action: result.next_action
+    next_action: result.next_action,
+    response_guidance: responseGuidance || undefined
   };
 }
 
@@ -1545,6 +1754,7 @@ function isRealtimeSessionActive() {
 function stopRealtimeSession() {
   state.realtimeSessionGeneration += 1;
   state.connecting = false;
+  releasePendingMicrophone();
   state.dataChannel?.close();
   state.peerConnection?.close();
   state.localStream?.getTracks().forEach(track => track.stop());
@@ -1564,11 +1774,11 @@ function stopRealtimeSession() {
   state.schedulingCapability = "";
   state.verificationPromise = null;
   state.liveConversationHints = { languagePreference: "", caregiverContext: "" };
-  state.agentTranscriptBuffer = "";
-  state.agentAudioTurnText = "";
-  state.agentAudioSegments = [];
-  state.agentAudioTurnStarted = false;
-  state.callbackDriftCancelled = false;
+  state.liveHintContext = "";
+  flushOpenAgentTurns();
+  state.packetOwner = "none";
+  state.liveMilestoneRank = 0;
+  state.liveValidated = false;
   state.lastCallerTranscript = "";
   state.callerVerificationText = "";
   // Pending realtime work must never leak into the next session.
@@ -1867,8 +2077,9 @@ function setView(view) {
       els.orbLiveLabel.textContent = view === "patient" ? "Tap mic to chat" : "Tap mic to answer";
     }
   }
-  // Closing the panel makes sense when leaving patient view
-  if (view === "executive") closeAssistantPanel();
+  // Leaving patient view hides the modal but keeps a live call running; the agent surface
+  // moves to the executive slot so the presenter can show the dashboard mid-call.
+  if (view === "executive") closeAssistantPanel({ endSession: false, restoreFocus: false });
 }
 
 function openAssistantPanel() {
@@ -1892,16 +2103,16 @@ function openAssistantPanel() {
   }
   if (els.viewSwitch) els.viewSwitch.inert = true;
   if (els.assistantBackdrop) els.assistantBackdrop.hidden = false;
-  const focusTarget = els.patientStartBtn || els.assistantPanelClose;
-  if (focusTarget) {
-    try { focusTarget.focus({ preventScroll: true }); } catch { focusTarget.focus(); }
-  }
+  // During a live call the start button is disabled, so focus the active End control.
+  const focusTarget = [els.patientStartBtn, els.patientStopBtn, els.assistantPanelClose]
+    .find(element => element && !element.disabled);
+  focusWithoutScroll(focusTarget);
 }
 
-function closeAssistantPanel() {
+function closeAssistantPanel({ endSession = true, restoreFocus = true } = {}) {
   if (!els.assistantPanel) return;
   const wasOpen = els.assistantPanel.classList.contains("open");
-  if (isRealtimeSessionActive()) {
+  if (endSession && isRealtimeSessionActive()) {
     stopRealtimeSession();
     showToast("Conversation ended.");
   }
@@ -1921,7 +2132,7 @@ function closeAssistantPanel() {
     ? state.lastFocusedElement
     : els.assistantFab;
   state.lastFocusedElement = null;
-  if (wasOpen && focusTarget) {
+  if (restoreFocus && wasOpen && focusTarget) {
     try { focusTarget.focus({ preventScroll: true }); } catch { focusTarget.focus(); }
   }
 }
@@ -1956,13 +2167,31 @@ document.addEventListener("keydown", (event) => {
   }
   trapAssistantPanelFocus(event);
 });
-if (els.assistantBackdrop) els.assistantBackdrop.addEventListener("click", closeAssistantPanel);
+if (els.assistantBackdrop) els.assistantBackdrop.addEventListener("click", () => closeAssistantPanel());
+
+function focusWithoutScroll(element) {
+  if (!element) return;
+  try { element.focus({ preventScroll: true }); } catch { element.focus(); }
+}
+
+// A live call follows the presenter between views: patient view reopens the panel, and
+// executive view shows the same call with the dashboard.
+function switchView(next) {
+  setView(next);
+  if (next === "patient" && isRealtimeSessionActive()) {
+    openAssistantPanel();
+  } else if (next === "executive") {
+    focusWithoutScroll(els.agentFace);
+  }
+}
 
 if (els.viewSwitch) {
   els.viewSwitch.addEventListener("click", () => {
-    const next = els.body.dataset.view === "patient" ? "executive" : "patient";
-    setView(next);
+    switchView(els.body.dataset.view === "patient" ? "executive" : "patient");
   });
+}
+if (els.panelExecutiveViewBtn) {
+  els.panelExecutiveViewBtn.addEventListener("click", () => switchView("executive"));
 }
 if (els.siteNav) {
   els.siteNav.querySelectorAll(".site-nav-link").forEach(btn => {
@@ -1972,7 +2201,7 @@ if (els.siteNav) {
 if (els.assistantFab) els.assistantFab.addEventListener("click", () => {
   openAssistantPanel();
 });
-if (els.assistantPanelClose) els.assistantPanelClose.addEventListener("click", closeAssistantPanel);
+if (els.assistantPanelClose) els.assistantPanelClose.addEventListener("click", () => closeAssistantPanel());
 if (els.patientStartBtn) els.patientStartBtn.addEventListener("click", startRealtimeSession);
 if (els.patientStopBtn) els.patientStopBtn.addEventListener("click", stopRealtimeSession);
 

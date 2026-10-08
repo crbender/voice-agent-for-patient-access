@@ -43,7 +43,7 @@
   // A factor next to a negation ("i'm not jordan lee", "jordan lee is not my name") is a
   // denial, not evidence, and the latest mention of a factor wins. Other parts of the same
   // name may sit between the negation and the word it denies.
-  // Keep in sync with server.py factor_stance().
+  // Keep in sync with server.py phrase_stance().
   const NEGATION = "(?:not|never|isn't|isnt|wasn't|wasnt|ain't|aint)";
   const DENIAL_FILLERS = ["really", "actually", "even", "named", "called", "the"];
   const DOB_DENIAL_FILLERS = ["born", "on"];
@@ -52,14 +52,29 @@
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
+  // Compiled denial patterns depend only on the filler set, so they are built once per set.
+  const denialPatternCache = new Map();
+
+  function denialPatterns(extraFillers) {
+    const key = extraFillers.join("|");
+    let patterns = denialPatternCache.get(key);
+    if (!patterns) {
+      const fillers = [...DENIAL_FILLERS, ...extraFillers].map(escapeRegExp).join("|");
+      patterns = {
+        before: new RegExp(`(?:^|\\s)${NEGATION}(?:\\s+(?:${fillers})){0,4}\\s$`),
+        after: new RegExp(
+          `^\\s(?:(?:${fillers})\\s+){0,4}(?:(?:is|was|are)\\s+(?:not|never)|isn't|isnt|wasn't|wasnt|ain't|aint)(?:\\s|$)`
+        )
+      };
+      denialPatternCache.set(key, patterns);
+    }
+    return patterns;
+  }
+
   function phraseStance(normalizedText, phrase, extraFillers = []) {
     const normalizedPhrase = normalizeVerificationText(phrase);
     if (!normalizedPhrase) return { index: -1, stance: "" };
-    const fillers = [...DENIAL_FILLERS, ...extraFillers].map(escapeRegExp).join("|");
-    const deniedBefore = new RegExp(`(?:^|\\s)${NEGATION}(?:\\s+(?:${fillers})){0,4}\\s$`);
-    const deniedAfter = new RegExp(
-      `^\\s(?:(?:${fillers})\\s+){0,4}(?:(?:is|was|are)\\s+(?:not|never)|isn't|isnt|wasn't|wasnt|ain't|aint)(?:\\s|$)`
-    );
+    const { before: deniedBefore, after: deniedAfter } = denialPatterns(extraFillers);
     const text = ` ${normalizedText} `;
     const needle = ` ${normalizedPhrase} `;
     let latest = { index: -1, stance: "" };
@@ -315,8 +330,110 @@
     return view !== "patient" || Boolean(assistantOpen);
   }
 
+  // Starts a microphone request early while keeping ownership with the caller: the stream is
+  // only handed over through adopt(), and release() stops it now or as soon as it resolves.
+  function requestEarlyMicrophone(mediaDevices, constraints) {
+    let stream = null;
+    let adopted = false;
+    let released = false;
+    const stopStream = value => value?.getTracks().forEach(track => track.stop());
+    const promise = new Promise(resolve => resolve(mediaDevices.getUserMedia(constraints)))
+      .then(value => {
+        stream = value;
+        if (released) stopStream(value);
+        return value;
+      });
+    promise.catch(() => {});
+    return {
+      promise,
+      adopt(value) {
+        adopted = true;
+        return value;
+      },
+      release() {
+        if (adopted || released) return;
+        released = true;
+        stopStream(stream);
+      }
+    };
+  }
+
+  const NEGATED_MENTION =
+    /\b(?:no|not|don't|dont|do not|doesn't|doesnt|never|without|can't|cant|cannot|won't|wont|isn't|isnt)\s+(?:\w+\s+){0,3}$/;
+
+  // The latest mention decides: "affirmed", "denied", or "" when the topic is not mentioned.
+  // Self-contained denials (such as "English only") count anywhere; corrections (such as
+  // "actually, not") only count after the topic has been mentioned.
+  function latestMentionStance(text, pattern, { denials = [], corrections = [] } = {}) {
+    let latest = { index: -1, stance: "" };
+    for (const match of text.matchAll(pattern)) {
+      const denied = NEGATED_MENTION.test(text.slice(0, match.index));
+      latest = { index: match.index, stance: denied ? "denied" : "affirmed" };
+    }
+    const laterDenials = latest.index >= 0 ? [...denials, ...corrections] : denials;
+    for (const denial of laterDenials) {
+      for (const match of text.matchAll(denial)) {
+        if (match.index <= latest.index) continue;
+        // "I don't want English only" negates the denial phrase itself, so it must not
+        // override an earlier affirmed mention. NEGATED_MENTION is a generic nearby-negation
+        // check (not scoped to this clause), so an unrelated negation just before the denial
+        // phrase (e.g. "I can't drive and English only") can also suppress it; this demo guard
+        // favors the common case over clause-level grammar parsing.
+        if (NEGATED_MENTION.test(text.slice(0, match.index))) continue;
+        latest = { index: match.index, stance: "denied" };
+      }
+    }
+    return latest.stance;
+  }
+
+  // Conservative live hints for the staff-facing packet. A key is present only when the
+  // utterance mentions that topic: an affirmed request sets it, and a denial or later
+  // correction ("I don't need Spanish", "actually, not this time") returns "" to clear it.
+  function detectConversationHints(value) {
+    const text = String(value || "").toLowerCase().replace(/[\u2018\u2019]/g, "'");
+    const hints = {};
+    const language = latestMentionStance(text, /\b(?:spanish|espa[ñn]ol)\b/g, {
+      denials: [/\b(?:english only|only english|just english|only in english)\b/g]
+    });
+    if (language) {
+      hints.languagePreference = language === "affirmed" ? "English first, Spanish second" : "";
+    }
+    const driving = motherDrivingStance(text);
+    if (driving === "affirmed") {
+      hints.caregiverContext = "mother driving";
+    } else if (driving === "denied") {
+      hints.caregiverContext = "";
+    }
+    return hints;
+  }
+
+  // The driving verb must belong to the mother in the same clause, so "my mom cannot drive,
+  // but my sister is driving me" never records the mother as the driver.
+  const MOTHER_DRIVING =
+    /\b(?:mom|mother|mama)\b((?:\s+\S+){0,4}?)\s+(?:driv(?:e|es|ing)|drove|brings?\s+me|bringing\s+me|giv(?:e|es|ing)\s+me\s+a\s+ride)\b/g;
+  const CLAUSE_BREAK = /[,;]|\b(?:but|and|or)\b/;
+  const DRIVING_NEGATION = /\b(?:not|never|can't|cant|cannot|won't|wont|isn't|isnt|doesn't|doesnt|don't|dont)\b/;
+  const DRIVING_CORRECTIONS = [/\b(?:actually|wait|sorry)\b[\s,]*not\b/g, /\bnot this time\b/g];
+
+  function motherDrivingStance(text) {
+    let latest = { index: -1, stance: "" };
+    for (const match of text.matchAll(MOTHER_DRIVING)) {
+      const between = match[1] || "";
+      if (CLAUSE_BREAK.test(between)) continue;
+      latest = { index: match.index, stance: DRIVING_NEGATION.test(between) ? "denied" : "affirmed" };
+    }
+    if (latest.index < 0) return "";
+    for (const correction of DRIVING_CORRECTIONS) {
+      for (const match of text.matchAll(correction)) {
+        if (match.index > latest.index) return "denied";
+      }
+    }
+    return latest.stance;
+  }
+
   return {
     buildScopedRealtimeContext,
+    detectConversationHints,
     dobMatchesVerification,
     fetchJsonWithDeadline,
     findActiveVerificationRecord,
@@ -326,6 +443,7 @@
     nameMatchesVerification,
     normalizeVerificationText,
     parseDemoDateOfBirth,
+    requestEarlyMicrophone,
     waitForDataChannelOpen,
     withDeadline
   };
