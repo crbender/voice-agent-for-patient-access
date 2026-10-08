@@ -650,18 +650,38 @@ test("barge-in marks the turn interrupted exactly once in either order", () => {
   }
 });
 
-test("cleared before any transcript still renders interrupted once the text arrives", () => {
+test("cleared before any transcript renders interrupted as soon as the text arrives", () => {
   const context = loadApp();
   const { els, handleRealtimeEvent } = context.__appTestHooks;
-  sendEvents(handleRealtimeEvent, [
-    { type: "output_audio_buffer.cleared", response_id: "resp-3" },
-    transcriptDone("resp-3", "Your options are"),
-    responseDone("resp-3", "cancelled")
-  ]);
+  sendEvents(handleRealtimeEvent, [{ type: "output_audio_buffer.cleared", response_id: "resp-3" }]);
+
+  // No transcript text yet, so there is nothing to render.
+  assert.equal(rileyRows(els).length, 0);
+
+  // The row must appear the moment the transcript arrives -- no later terminal event required.
+  sendEvents(handleRealtimeEvent, [transcriptDone("resp-3", "Your options are")]);
   const rows = rileyRows(els);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].innerHTML.match(/\(interrupted\)/g).length, 1);
   assert.match(rows[0].innerHTML, /Your options are/);
+});
+
+test("a second transcript segment after an early interrupted render is not dropped", () => {
+  const context = loadApp();
+  const { els, handleRealtimeEvent } = context.__appTestHooks;
+  sendEvents(handleRealtimeEvent, [
+    { type: "output_audio_buffer.cleared", response_id: "resp-3b" },
+    transcriptDone("resp-3b", "Your options are")
+  ]);
+
+  // The first segment already forced a render; a later segment for the same response must
+  // update that row instead of being silently tracked but never shown.
+  sendEvents(handleRealtimeEvent, [transcriptDone("resp-3b", "the morning or the afternoon.")]);
+
+  const rows = rileyRows(els);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].innerHTML.match(/\(interrupted\)/g).length, 1);
+  assert.match(rows[0].innerHTML, /Your options are the morning or the afternoon\./);
 });
 
 test("ending a call between response.done and output_audio_buffer.stopped marks the cut-off reply interrupted", () => {

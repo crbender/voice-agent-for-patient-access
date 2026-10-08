@@ -247,13 +247,15 @@ function setSceneChipActive(index) {
   });
 }
 
-function addMessage(item) {
+function rowClassName(item) {
   const isPatient = item.type === "patient";
   const isSystem = item.type === "system";
-  const row = document.createElement("div");
-  row.className = `bubble-row ${isPatient ? "patient" : isSystem ? "system" : "agent"}`;
+  return `bubble-row ${isPatient ? "patient" : isSystem ? "system" : "agent"}`;
+}
 
-  const ts = formatTimestamp();
+function rowHtml(item, ts) {
+  const isPatient = item.type === "patient";
+  const isSystem = item.type === "system";
   const initials = (item.who || "").split(/\s+/).map(p => p[0]).filter(Boolean).slice(0, 2).join("").toUpperCase() || "?";
   const avatarHtml = isPatient
     ? `<div class="avatar">${initials}</div>`
@@ -266,7 +268,14 @@ function addMessage(item) {
     ${escapeHtml(item.text)}
   </div>`;
 
-  row.innerHTML = isPatient ? `${bubbleHtml}${avatarHtml}` : `${avatarHtml}${bubbleHtml}`;
+  return isPatient ? `${bubbleHtml}${avatarHtml}` : `${avatarHtml}${bubbleHtml}`;
+}
+
+function addMessage(item, ts = formatTimestamp()) {
+  const row = document.createElement("div");
+  row.className = rowClassName(item);
+  row.innerHTML = rowHtml(item, ts);
+  row.dataset.ts = ts;
   els.transcript.querySelector(".empty-state")?.remove();
   els.transcript.appendChild(row);
   const rows = els.transcript.querySelectorAll(".bubble-row");
@@ -860,7 +869,16 @@ function handleRealtimeEvent(rawMessage) {
     updateLiveConversationHints(event.transcript);
   }
   if (event.type === "response.output_audio_transcript.done" && event.transcript) {
-    agentTurnFor(event.response_id).segments.push(event.transcript);
+    const turn = agentTurnFor(event.response_id);
+    turn.segments.push(event.transcript);
+    // If "cleared" already marked this turn interrupted before any text arrived, render it
+    // now instead of waiting for a later terminal event. A response can emit more than one
+    // transcript segment, so an already-rendered interrupted row is refreshed in place rather
+    // than left frozen on just the first segment.
+    if (turn.interrupted) {
+      if (turn.row) updateAgentTurnRow(turn);
+      else finalizeAgentTurn(event.response_id);
+    }
   }
   if (event.type === "response.output_audio_transcript.delta" && event.delta) {
     agentTurnFor(event.response_id).deltaText += event.delta;
@@ -945,10 +963,21 @@ function appendInterruptedSuffix(turn) {
   (turn.row.querySelector(".bubble") || turn.row).insertAdjacentText("beforeend", INTERRUPTED_SUFFIX);
 }
 
-// Rendering happens once, at the first terminal event that has text; later terminal events
-// for the same response can only add the interrupted marker. A turn can still have no text
-// here (e.g. "cleared" arriving before any transcript) -- finalization is retried by the next
-// terminal event for the same response (stopped/done/cleared), once transcript text exists.
+// Re-renders an already-rendered interrupted turn's text in place, keeping its original
+// timestamp. Used when a response emits more than one transcript segment after "cleared"
+// already forced an early render off the first segment -- without this, later segments would
+// be tracked in state but never shown.
+function updateAgentTurnRow(turn) {
+  const text = `${agentTurnText(turn)}${INTERRUPTED_SUFFIX}`;
+  turn.row.innerHTML = rowHtml({ who: "Riley", type: "agent", text }, turn.row.dataset.ts);
+  turn.suffixApplied = true;
+}
+
+// Rendering happens once, at the first event that has text; later terminal events for the
+// same response can only add the interrupted marker. A turn can still have no text here
+// (e.g. "cleared" arriving before any transcript) -- finalization is retried as soon as
+// transcript text arrives for an already-interrupted turn, or by the next terminal event
+// otherwise.
 function finalizeAgentTurn(responseId) {
   if (!responseId && state.agentTurns.size === 0) return;
   const turn = agentTurnFor(responseId);
